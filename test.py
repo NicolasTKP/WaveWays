@@ -310,6 +310,63 @@ def calculate_vessel_range_km(vessel_data):
     max_range_km = total_hours_possible * speed_km_per_hour
     return max_range_km
 
+def simulate_vessel_route(vessel_data, G, route):
+    """
+    Simulate the vessel's journey along a given route, including fuel consumption and refueling.
+    """
+    current_vessel_state = vessel_data.copy()
+    journey_log = []
+    
+    print("\n--- Simulating Vessel Route ---")
+    print(f"Starting fuel: {current_vessel_state['fuel_tank_remaining_t']:.2f} tons")
+
+    for i in range(len(route) - 1):
+        start_port = route[i]
+        end_port = route[i+1]
+        
+        # Get edge data
+        if G.has_edge(start_port, end_port):
+            edge_data = G[start_port][end_port]
+        elif G.has_edge(end_port, start_port): # Check for reverse edge if graph is undirected
+            edge_data = G[end_port][start_port]
+        else:
+            print(f"Error: No edge found between {start_port} and {end_port}. Skipping segment.")
+            continue
+
+        distance_km = edge_data["distance_km"]
+        
+        # Calculate fuel consumption for this segment
+        speed_knots = current_vessel_state["speed_knots"]
+        fuel_consumption_t_per_day = current_vessel_state["fuel_consumption_t_per_day"]
+        
+        speed_km_per_hour = speed_knots * 1.852
+        travel_time_hours = distance_km / speed_km_per_hour
+        fuel_consumed_t = (fuel_consumption_t_per_day / 24.0) * travel_time_hours
+        
+        current_vessel_state["fuel_tank_remaining_t"] -= fuel_consumed_t
+        
+        log_entry = {
+            "segment": f"{start_port} to {end_port}",
+            "distance_km": distance_km,
+            "fuel_consumed_t": fuel_consumed_t,
+            "fuel_remaining_before_refuel_t": current_vessel_state["fuel_tank_remaining_t"]
+        }
+        
+        # Refuel if it's not the first port visited
+        if i > 0: # i=0 is the first segment, meaning end_port is the second port visited
+            current_vessel_state["fuel_tank_remaining_t"] = current_vessel_state["fuel_tank_capacity_t"]
+            log_entry["refueled"] = True
+            log_entry["fuel_remaining_after_refuel_t"] = current_vessel_state["fuel_tank_remaining_t"]
+        else:
+            log_entry["refueled"] = False
+            log_entry["fuel_remaining_after_refuel_t"] = current_vessel_state["fuel_tank_remaining_t"] # No refuel, so same as before
+
+        journey_log.append(log_entry)
+        print(f"  Segment {start_port} -> {end_port}: Distance={distance_km:.1f} km, Fuel Consumed={fuel_consumed_t:.2f} t, Fuel Remaining={current_vessel_state['fuel_tank_remaining_t']:.2f} t {'(Refueled)' if i > 0 else ''}")
+
+    print("--- Simulation Complete ---")
+    return current_vessel_state, journey_log
+
 
 # ds = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
 # print(ds)
@@ -457,6 +514,16 @@ else:
         except Exception as e:
             print(f"Error generating path route: {e}")
 
+        # Simulate the routes
+        if 'cycle' in locals():
+            final_vessel_state_cycle, journey_log_cycle = simulate_vessel_route(vessel, G, cycle)
+            print(f"\nFinal fuel after cycle route: {final_vessel_state_cycle['fuel_tank_remaining_t']:.2f} tons")
+        
+        if 'path' in locals():
+            final_vessel_state_path, journey_log_path = simulate_vessel_route(vessel, G, path)
+            print(f"\nFinal fuel after path route: {final_vessel_state_path['fuel_tank_remaining_t']:.2f} tons")
+
+
 # Visualize the routes
 plt.figure(figsize=(10, 8))
 nx.draw(G, pos, with_labels=True, node_color='lightblue', node_size=500, font_size=10, font_color='black', edge_color='gray')
@@ -466,4 +533,3 @@ for route in [cycle, path]:
     nx.draw_networkx_edges(G, pos, edgelist=route_edges, edge_color='red', width=2)
     
 plt.show()
-

@@ -52,7 +52,7 @@ locations = {
     ]
 }
 
-ds = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
+ds = xr.open_dataset("data\\Bathymetry\\GEBCO_2024_sub_ice_topo.nc")
 print(ds)
 
 

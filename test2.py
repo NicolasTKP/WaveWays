@@ -1,117 +1,148 @@
-import requests
-from bs4 import BeautifulSoup
-import re
+import heapq
 
-def scrape_weather_data(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching URL: {e}")
-        return None
+class Node:
+    def __init__(self, position, parent=None):
+        self.position = position
+        self.parent = parent
+        self.g = 0  # Cost from start to this node
+        self.h = 0  # Heuristic cost from this node to end
+        self.f = 0  # Total cost (g + h)
 
-    soup = BeautifulSoup(response.text, 'html.parser')
-    weather_data = {}
+    def __eq__(self, other):
+        return self.position == other.position
 
-    # Find the main content area where the weather information is displayed
-    # Based on a quick inspection of the page, the data seems to be within tables or specific divs.
-    # I'll look for common patterns like 'table', 'div', 'p' with relevant text.
+    def __lt__(self, other):
+        return self.f < other.f
 
-    # Example: Extracting data from tables. This part needs to be adapted based on the actual HTML structure.
-    # Let's assume the weather data is in a table with class 'weather-table' or similar.
-    # This is a placeholder and will need refinement after inspecting the actual HTML.
+    def __hash__(self): # Added for set/dict usage
+        return hash(self.position)
 
-    # The page structure is complex, with multiple tables and divs.
-    # I'll try to find the main content area and then iterate through its children.
-    
-    # A common pattern for content is often within a div with a specific ID or class.
-    # Let's try to find all tables and then filter them.
-    tables = soup.find_all('table')
-    
-    if not tables:
-        print("No tables found on the page.")
-        return weather_data
+def astar(maze, start, end):
+    """
+    Finds the shortest path from start to end in a maze using the A* algorithm.
 
-    # Assuming the relevant table is the first one or has a specific structure
-    # This part requires manual inspection of the HTML to be precise.
-    # For now, I'll iterate through all tables and try to extract data.
-    
-    for i, table in enumerate(tables):
-        table_data = []
-        headers = [th.get_text(strip=True) for th in table.find_all('th')]
-        rows = table.find_all('tr')
-        
-        # Skip the first row if headers were found, as it's likely the header row itself
-        start_row_index = 1 if headers else 0
-        
-        for row in rows[start_row_index:]:
-            cols = row.find_all('td') # Only look for <td> for data rows
-            cols = [ele.get_text(strip=True) for ele in cols]
-            row_data = [ele for ele in cols if ele]
-            
-            if headers and len(row_data) == len(headers):
-                row_dict = dict(zip(headers, row_data))
-                
-                # Further parse the 'Forecast' string if it exists
-                if 'Forecast' in row_dict:
-                    forecast_str = row_dict['Forecast']
-                    parsed_forecast = {}
-                    
-                    # Split by "Morning:", "Afternoon:", "Night:"
-                    # Use regex to split the forecast string into periods
-                    period_matches = re.findall(r'(Morning:|Afternoon:|Night:)(.*?)(?=Morning:|Afternoon:|Night:|$)', forecast_str)
-                    
-                    for period_tag, period_content in period_matches:
-                        period_name = period_tag.replace(':', '').strip()
-                        
-                        # Extract Weather description
-                        # The weather description is everything before "Wind Direction:"
-                        weather_desc_match = re.match(r'(.+?)(?:Wind Direction:|$)', period_content)
-                        weather_desc = weather_desc_match.group(1).strip() if weather_desc_match else period_content.strip()
+    Args:
+        maze (list of list of int): A 2D grid where 0 represents a walkable path
+                                    and 1 represents an obstacle.
+        start (tuple): The starting coordinates (row, col).
+        end (tuple): The ending coordinates (row, col).
 
-                        forecast_details = {
-                            'Weather': weather_desc if weather_desc else None
-                        }
-                        parsed_forecast[period_name] = forecast_details
-                    
-                    row_dict['Forecast'] = parsed_forecast
-                table_data.append(row_dict)
-            else:
-                table_data.append(row_data) # Fallback if headers don't match row length
-        
-        if table_data:
-            weather_data[f"table_{i+1}"] = table_data
+    Returns:
+        list of tuple: The path from start to end, or None if no path is found.
+    """
+    start_node = Node(start)
+    end_node = Node(end)
 
-    return weather_data
+    open_list = [] # Min-heap for (f_cost, node)
+    open_list_positions = {start_node.position: start_node} # Dictionary to quickly access nodes in open_list by position
+    closed_list_positions = set() # Set to store positions of nodes already evaluated
+
+    heapq.heappush(open_list, (start_node.f, start_node))
+
+    while open_list:
+        f_cost, current_node = heapq.heappop(open_list)
+
+        # If we already processed a better path to this node, skip
+        if current_node.position in closed_list_positions:
+            continue
+
+        closed_list_positions.add(current_node.position)
+
+        if current_node == end_node:
+            path = []
+            current = current_node
+            while current is not None:
+                path.append(current.position)
+                current = current.parent
+            return path[::-1]
+
+        (x, y) = current_node.position
+        neighbors = [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]
+
+        for next_pos in neighbors:
+            (nx, ny) = next_pos
+
+            if not (0 <= nx < len(maze) and 0 <= ny < len(maze[0])):
+                continue
+
+            if maze[nx][ny] != 0:
+                continue
+
+            if next_pos in closed_list_positions:
+                continue
+
+            new_g = current_node.g + 1
+            new_h = abs(nx - end_node.position[0]) + abs(ny - end_node.position[1])
+            new_f = new_g + new_h
+
+            # If the neighbor is already in open_list_positions and we found a worse path, skip
+            if next_pos in open_list_positions and new_g >= open_list_positions[next_pos].g:
+                continue
+
+            # This is either a new node or a better path to an existing node in open_list
+            new_node = Node(next_pos, current_node)
+            new_node.g = new_g
+            new_node.h = new_h
+            new_node.f = new_f
+
+            heapq.heappush(open_list, (new_node.f, new_node))
+            open_list_positions[next_pos] = new_node # Update or add the node with the better path
+
+    return None  # No path found
 
 if __name__ == "__main__":
-    locations = {
-        "Northern_Straits_of_Malacca": "Sh002",
-        "Southern_Straits_of_Malacca": "Sh003",
-        "Tioman_Island": "Sh005",
-        "Bunguran_Island": "Sh007",
-        "Layang_Layang_Island": "Sh010",
-        "Labuan": "Sh012"
-    }
+    # Example Maze: 0 = walkable, 1 = obstacle
+    maze = [
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
 
-    all_scraped_data = {}
+    start = (0, 0)
+    end = (9, 9)
 
-    for location_name, location_code in locations.items():
-        url = f"https://www.met.gov.my/en/forecast/marine/shipping/{location_code}/"
-        print(f"\nScraping data for {location_name} ({location_code})...")
-        scraped_data = scrape_weather_data(url)
-        
-        if scraped_data:
-            all_scraped_data[location_name] = scraped_data
-            print(f"Successfully scraped data for {location_name}.")
-        else:
-            print(f"Failed to scrape data for {location_name}.")
+    print(f"Finding path from {start} to {end} in the maze:")
+    path = astar(maze, start, end)
 
-    if all_scraped_data:
-        print("\n--- All Scraped Weather Data ---")
-        for location, data in all_scraped_data.items():
-            print(f"\nLocation: {location}")
-            for key, value in data.items():
-                print(f"  {key}: {value}")
+    if path:
+        print("Path found:")
+        for r, c in path:
+            print(f"({r}, {c})", end=" -> ")
+        print("End")
+
+        # Visualize the path on the maze
+        path_maze = [row[:] for row in maze] # Create a copy
+        for r, c in path:
+            if (r, c) != start and (r, c) != end:
+                path_maze[r][c] = '*'
+        path_maze[start[0]][start[1]] = 'S'
+        path_maze[end[0]][end[1]] = 'E'
+
+        print("\nMaze with path:")
+        for row in path_maze:
+            print(" ".join(map(str, row)))
     else:
-        print("\nNo data was scraped for any location.")
+        print("No path found!")
+
+    print("\n--- Example 2: No Path ---")
+    maze_no_path = [
+        [0, 0, 0, 1],
+        [0, 1, 0, 1],
+        [0, 1, 0, 1],
+        [0, 0, 0, 1]
+    ]
+    start_no_path = (0, 0)
+    end_no_path = (3, 3)
+    print(f"Finding path from {start_no_path} to {end_no_path} in the maze:")
+    path_no_path = astar(maze_no_path, start_no_path, end_no_path)
+    if path_no_path:
+        print("Path found:", path_no_path)
+    else:
+        print("No path found!")
