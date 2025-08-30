@@ -194,6 +194,9 @@ location_codes = {
     "Labuan": "Sh012"
 }
 
+# Global dictionary to store weather data for locations
+location_weather_cache = {}
+
 def is_point_in_polygon(lat, lon, polygon_points):
     """
     Check if a (lat, lon) point is inside a polygon defined by a list of points.
@@ -272,6 +275,8 @@ def get_weather_for_point(lat, lon):
                 url = f"https://www.met.gov.my/en/forecast/marine/shipping/{location_code}/"
                 # print(f"Fetching weather for {location_name} at ({lat}, {lon})...")
                 weather = scrape_weather_data(url)
+                if weather:
+                    location_weather_cache[location_name] = weather # Store weather data
                 return weather, location_name
     return None, None
 
@@ -476,6 +481,31 @@ def haversine(lat1, lon1, lat2, lon2):
     distance = R * c
     return distance
 
+def create_weather_penalty_grid(min_lon, max_lon, min_lat, max_lat, lat_step, lon_step, num_lat_cells, num_lon_cells):
+    """
+    Creates a grid with weather penalties for each cell.
+    """
+    weather_penalty_grid = np.zeros((num_lat_cells, num_lon_cells), dtype=float)
+
+    for location_name, weather_data in location_weather_cache.items():
+        penalty = get_weather_penalty(weather_data)
+        if penalty > 0: # Only apply penalty if there's bad weather
+            # Get the polygon for the location
+            polygon_points = locations_data.get(location_name)
+            if polygon_points:
+                polygon_coords = [(p["lon"], p["lat"]) for p in polygon_points]
+                location_polygon = Polygon(polygon_coords)
+
+                # Iterate through grid cells and check if their center is in the polygon
+                for r in range(num_lat_cells):
+                    for c in range(num_lon_cells):
+                        cell_lat = min_lat + r * lat_step + lat_step / 2
+                        cell_lon = min_lon + c * lon_step + lon_step / 2
+                        
+                        if location_polygon.contains(Point(cell_lon, cell_lat)):
+                            weather_penalty_grid[r, c] = max(weather_penalty_grid[r, c], penalty) # Take max penalty if areas overlap
+    return weather_penalty_grid.tolist()
+
 class Node:
     def __init__(self, position, parent=None):
         self.position = position
@@ -493,7 +523,7 @@ class Node:
     def __hash__(self):
         return hash(self.position)
 
-def astar(maze, start, end):
+def astar(maze, start, end, weather_penalty_grid=None):
     start_node = Node(start)
     end_node = Node(end)
 
@@ -528,13 +558,16 @@ def astar(maze, start, end):
             if not (0 <= nx < len(maze) and 0 <= ny < len(maze[0])):
                 continue
 
+            # Check for bathymetry obstacles
             if maze[nx][ny] != 0:
                 continue
 
-            if next_pos in closed_list_positions:
-                continue
+            # Calculate movement cost, including weather penalty
+            move_cost = 1 # Base cost for moving to an adjacent cell
+            if weather_penalty_grid and weather_penalty_grid[nx][ny] > 0:
+                move_cost += weather_penalty_grid[nx][ny] # Add weather penalty
 
-            new_g = current_node.g + 1
+            new_g = current_node.g + move_cost
             new_h = abs(nx - end_node.position[0]) + abs(ny - end_node.position[1])
             new_f = new_g + new_h
 
@@ -661,16 +694,24 @@ if __name__ == "__main__":
         num_lat_cells = len(grid_lats)
         num_lon_cells = len(grid_lons)
 
+        # Create the weather penalty grid
+        weather_penalty_grid = create_weather_penalty_grid(
+            min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar, lat_step, lon_step, num_lat_cells, num_lon_cells
+        )
+
         # Plot the bathymetry maze (0=walkable, 1=obstacle)
         cmap_maze = pyplot.get_cmap('Greys_r', 2)
         ax.imshow(bathymetry_maze, extent=[min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar],
                        origin='lower', cmap=cmap_maze, interpolation='nearest', alpha=0.7)
         
-        # Plot grid lines (optional, can be removed for cleaner plot)
-        # for lat in grid_lats:
-        #     ax.axhline(lat, color='gray', linestyle='--', linewidth=0.5, alpha=0.3)
-        # for lon in grid_lons:
-        #     ax.axvline(lon, color='gray', linestyle='--', linewidth=0.5, alpha=0.3)
+        # Plot weather penalty areas
+        # Create a masked array for weather penalties to only show areas with penalties
+        weather_penalty_np = np.array(weather_penalty_grid)
+        masked_weather_penalty = np.ma.masked_where(weather_penalty_np == 0, weather_penalty_np)
+        
+        cmap_weather = pyplot.get_cmap('YlOrRd', 5) # Yellow-Orange-Red for penalties
+        ax.imshow(masked_weather_penalty, extent=[min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar],
+                       origin='lower', cmap=cmap_weather, interpolation='nearest', alpha=0.5)
 
         # Plot all selected ports from main.py
         ax.scatter(selected_ports_main["lon"], selected_ports_main["lat"], color='purple', s=150, marker='^', label="Selected Ports (TSP)")
@@ -732,22 +773,30 @@ if __name__ == "__main__":
                     print(f"Could not find walkable end point for {end_port_name}. Skipping segment.")
                     continue
 
-            path_grid = astar(bathymetry_maze, start_grid, end_grid)
+            # Attempt to find path with weather penalties
+            path_grid = astar(bathymetry_maze, start_grid, end_grid, weather_penalty_grid)
 
-            if path_grid:
-                path_latlon = [grid_coords_to_lat_lon(r, c, min_lat_astar, min_lon_astar, lat_step, lon_step) for r, c in path_grid]
-                all_astar_paths_latlon.extend(path_latlon)
+            if not path_grid:
+                print(f"No A* path found for segment: {start_port_name} to {end_port_name} with weather penalties. Trying without weather penalties as fallback.")
+                # Fallback: Try to find a path without considering weather penalties
+                path_grid = astar(bathymetry_maze, start_grid, end_grid, weather_penalty_grid=None)
+                if path_grid:
+                    print(f"Fallback path found for segment: {start_port_name} to {end_port_name} (ignoring weather penalties).")
+                else:
+                    print(f"No A* path found even with fallback for segment: {start_port_name} to {end_port_name}. Skipping segment.")
+                    continue
 
-                # Plot this segment's A* path
-                path_lons = [p[1] for p in path_latlon]
-                path_lats = [p[0] for p in path_latlon]
-                current_color = colors[color_index % len(colors)]
-                ax.plot(path_lons, path_lats, color=current_color, linewidth=2, alpha=0.8, label=f"A* Path: {start_port_name}-{end_port_name}")
-                ax.scatter(start_latlon[1], start_latlon[0], color='green', s=80, marker='o')
-                ax.scatter(end_latlon[1], end_latlon[0], color='red', s=80, marker='X')
-                color_index += 1
-            else:
-                print(f"No A* path found for segment: {start_port_name} to {end_port_name}")
+            path_latlon = [grid_coords_to_lat_lon(r, c, min_lat_astar, min_lon_astar, lat_step, lon_step) for r, c in path_grid]
+            all_astar_paths_latlon.extend(path_latlon)
+
+            # Plot this segment's A* path
+            path_lons = [p[1] for p in path_latlon]
+            path_lats = [p[0] for p in path_latlon]
+            current_color = colors[color_index % len(colors)]
+            ax.plot(path_lons, path_lats, color=current_color, linewidth=2, alpha=0.8, label=f"A* Path: {start_port_name}-{end_port_name}")
+            ax.scatter(start_latlon[1], start_latlon[0], color='green', s=80, marker='o')
+            ax.scatter(end_latlon[1], end_latlon[0], color='red', s=80, marker='X')
+            color_index += 1
 
         # Final plot settings
         ax.set_xlim(min_lon_astar, max_lon_astar)
