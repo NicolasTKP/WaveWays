@@ -1,0 +1,10 @@
+xarray
+geopandas
+matplotlib
+numpy
+pandas
+shapely
+networkx
+geopy
+requests
+beautifulsoup4
