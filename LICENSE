@@ -1,0 +1,56 @@
+Test-Only License (No Production, No Commercial, No Personal-Project Use)
+SPDX-License-Identifier: LicenseRef-Test-Only
+
+Copyright (c) 2025 Nicolas Tan
+
+1. Permission Grant
+   Subject to the terms below, you are granted a limited, revocable, non-exclusive,
+   non-transferable license to download, install, and COPY the Software solely for the
+   purpose of evaluating and testing its functionality (“Testing”). No other rights are granted.
+
+2. Prohibited Uses
+   You may NOT, under any circumstances:
+   a) use the Software for any commercial purpose or in connection with any business,
+      organization, or revenue-generating activity (“Commercial Use”);
+   b) use the Software for any personal or “self” project, portfolio, coursework deliverable,
+      research project, hobby project, side project, open-source project, or any purpose other
+      than Testing (“Personal-Project Use”);
+   c) use, run, or deploy the Software in production or in any environment that provides
+      functionality to end users or third parties (“Production Use”);
+   d) modify, adapt, translate, create derivative works of, or reverse engineer the Software,
+      except as strictly necessary to perform Testing;
+   e) distribute, publish, sublicense, sell, host, offer as a service (SaaS), or otherwise make
+      the Software or any part of it available to any third party;
+   f) use any output, data, or results produced by the Software for purposes other than Testing,
+      including training machine-learning models or datasets.
+
+3. Copies and Notices
+   You may make a reasonable number of copies solely for Testing. All copies must retain the
+   complete copyright notice and this license in full.
+
+4. Ownership
+   The Software is licensed, not sold. All rights not expressly granted are reserved by the owner.
+
+5. Feedback
+   If you provide feedback, you grant the owner a perpetual, irrevocable, worldwide, royalty-free
+   license to use it for any purpose without obligation.
+
+6. Warranty Disclaimer
+   THE SOFTWARE IS PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE, NON-INFRINGEMENT, OR THAT THE SOFTWARE WILL BE ERROR-FREE OR SECURE.
+
+7. Limitation of Liability
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT WILL THE OWNER BE LIABLE FOR ANY INDIRECT,
+   SPECIAL, INCIDENTAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS,
+   REVENUE, DATA, OR USE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+8. Termination
+   This license terminates automatically if you breach any term. Upon termination, you must cease
+   all use, delete all copies, and certify deletion upon request.
+
+9. Governing Law
+   This license is governed by the laws of the jurisdiction of the Owner, excluding conflict-of-law rules.
+
+10. Entire Agreement
+   This is the entire agreement regarding Testing of the Software and supersedes all prior understandings.
