@@ -473,6 +473,45 @@ def haversine(lat1, lon1, lat2, lon2):
     distance = R * c
     return distance
 
+def generate_landmark_points(path_latlon, interval_km=100):
+    """
+    Generates landmark points along a given path at specified intervals.
+    """
+    if not path_latlon:
+        return []
+
+    landmark_points = [path_latlon[0]] # Start with the first point
+    cumulative_distance = 0.0
+
+    for i in range(len(path_latlon) - 1):
+        p1 = path_latlon[i]
+        p2 = path_latlon[i+1]
+        segment_distance = geodesic(p1, p2).km
+        
+        # Check if adding this segment crosses a landmark interval
+        while cumulative_distance + segment_distance >= interval_km:
+            remaining_distance_to_landmark = interval_km - cumulative_distance
+            
+            # Calculate the fraction of the current segment needed to reach the landmark
+            fraction = remaining_distance_to_landmark / segment_distance
+            
+            # Interpolate the point
+            # Note: geodesic expects (lat, lon) tuples
+            lat_interp = p1[0] + fraction * (p2[0] - p1[0])
+            lon_interp = p1[1] + fraction * (p2[1] - p1[1])
+            
+            landmark_points.append((lat_interp, lon_interp))
+            cumulative_distance += remaining_distance_to_landmark
+            segment_distance -= remaining_distance_to_landmark
+            
+            # Reset cumulative_distance for the next interval
+            if cumulative_distance >= interval_km:
+                cumulative_distance = 0.0 # Start new interval from this landmark
+                
+        cumulative_distance += segment_distance
+        
+    return landmark_points
+
 def create_weather_penalty_grid(min_lon, max_lon, min_lat, max_lat, lat_step, lon_step, num_lat_cells, num_lon_cells):
     """
     Creates a grid with weather penalties for each cell.
@@ -649,7 +688,7 @@ if __name__ == "__main__":
         print("\nOptimal path route:", optimal_path_route)
         
         # Load bathymetry data
-        ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2024_sub_ice_topo.nc")
+        ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
 
         # Define the region of interest (Malaysia)
         min_lon_astar, max_lon_astar = 99, 120
@@ -766,10 +805,20 @@ if __name__ == "__main__":
             ax.scatter(start_latlon[1], start_latlon[0], color='green', s=80, marker='o')
             ax.scatter(end_latlon[1], end_latlon[0], color='red', s=80, marker='X')
             color_index += 1
+        
+        # Generate and plot landmark points
+        landmark_points = generate_landmark_points(all_astar_paths_latlon, interval_km=50)
+        if landmark_points:
+            landmark_lons = [p[1] for p in landmark_points]
+            landmark_lats = [p[0] for p in landmark_points]
+            ax.scatter(landmark_lons, landmark_lats, color='cyan', s=100, marker='*', edgecolor='black', label="Landmark Points (100km)")
+            print(f"\nGenerated {len(landmark_points)} landmark points:")
+            for lp in landmark_points:
+                print(f"  Lat: {lp[0]:.4f}, Lon: {lp[1]:.4f}")
 
         ax.set_xlim(min_lon_astar, max_lon_astar)
         ax.set_ylim(min_lat_astar, max_lat_astar)
-        plt.title("Combined Optimal TSP Route with A* Paths on Bathymetry Grid")
+        plt.title("Combined Optimal TSP Route with A* Paths and Landmark Points on Bathymetry Grid")
         plt.xlabel("Longitude")
         plt.ylabel("Latitude")
         handles, labels = ax.get_legend_handles_labels()
