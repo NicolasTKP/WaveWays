@@ -13,6 +13,7 @@ import re
 import heapq
 from math import radians, sin, cos, sqrt, atan2
 import matplotlib.pyplot as pyplot
+from d_star_lite import find_d_star_lite_route, create_bathymetry_grid, lat_lon_to_grid_coords, grid_coords_to_lat_lon
 
 vessel = {
     "speed_knots": 20.0,
@@ -826,6 +827,76 @@ if __name__ == "__main__":
         unique_handles = [handles[labels.index(l)] for l in unique_labels]
         ax.legend(unique_handles, unique_labels)
         plt.grid(True, linestyle=':', alpha=0.6)
+        
+        # --- Simulate Obstacle and Perform D* Lite Rerouting ---
+        if len(landmark_points) >= 2:
+            # Choose two consecutive landmark points for rerouting
+            reroute_start_latlon = landmark_points[0]
+            reroute_end_latlon = landmark_points[1] # Or any other two consecutive points
+
+            print(f"\nSimulating obstacle and performing D* Lite rerouting between landmark points:")
+            print(f"  Start: Lat={reroute_start_latlon[0]:.4f}, Lon={reroute_start_latlon[1]:.4f}")
+            print(f"  End: Lat={reroute_end_latlon[0]:.4f}, Lon={reroute_end_latlon[1]:.4f}")
+
+            # Define an obstacle in grid coordinates
+            # For demonstration, let's place an obstacle near the middle of the segment
+            mid_lat = (reroute_start_latlon[0] + reroute_end_latlon[0]) / 2
+            mid_lon = (reroute_start_latlon[1] + reroute_end_latlon[1]) / 2
+            
+            obstacle_grid_coords = lat_lon_to_grid_coords(mid_lat, mid_lon, min_lat_astar, min_lon_astar, lat_step, lon_step, num_lat_cells, num_lon_cells)
+            
+            # Create a copy of the maze to modify for D* Lite
+            dstar_maze = [row[:] for row in bathymetry_maze]
+            
+            # Define obstacle size in grid cells (20km / 5km_per_cell = 4 cells)
+            obstacle_grid_size = 4 
+            
+            # Calculate the top-left corner of the obstacle block
+            ox, oy = obstacle_grid_coords
+            obstacle_start_row = max(0, ox - obstacle_grid_size // 2)
+            obstacle_end_row = min(num_lat_cells, ox + obstacle_grid_size // 2)
+            obstacle_start_col = max(0, oy - obstacle_grid_size // 2)
+            obstacle_end_col = min(num_lon_cells, oy + obstacle_grid_size // 2)
+
+            # Mark the obstacle in the D* Lite maze
+            actual_obstacle_cells = []
+            for r in range(obstacle_start_row, obstacle_end_row):
+                for c in range(obstacle_start_col, obstacle_end_col):
+                    if 0 <= r < num_lat_cells and 0 <= c < num_lon_cells:
+                        dstar_maze[r][c] = 1 # Mark as obstacle
+                        actual_obstacle_cells.append((r, c))
+                        
+            if actual_obstacle_cells:
+                print(f"  Obstacle simulated as a {obstacle_grid_size}x{obstacle_grid_size} block around grid coords: {obstacle_grid_coords}")
+                # Visualize the obstacle block
+                obstacle_lats = [grid_coords_to_lat_lon(r, c, min_lat_astar, min_lon_astar, lat_step, lon_step)[0] for r, c in actual_obstacle_cells]
+                obstacle_lons = [grid_coords_to_lat_lon(r, c, min_lat_astar, min_lon_astar, lat_step, lon_step)[1] for r, c in actual_obstacle_cells]
+                ax.scatter(obstacle_lons, obstacle_lats, color='black', s=50, marker='s', label="Simulated Obstacle (20km x 20km)")
+            else:
+                print(f"  Warning: Obstacle coordinates {obstacle_grid_coords} are out of grid bounds or no cells could be marked. Not placing obstacle.")
+                obstacle_grid_coords = None # Don't pass invalid obstacle
+
+            rerouted_path_latlon = find_d_star_lite_route(
+                dstar_maze, 
+                reroute_start_latlon, 
+                reroute_end_latlon, 
+                min_lat_astar, min_lon_astar, 
+                lat_step, lon_step, 
+                num_lat_cells, num_lon_cells, 
+                weather_penalty_grid,
+                obstacle_coords=obstacle_grid_coords # Pass the obstacle to D* Lite
+            )
+
+            if rerouted_path_latlon:
+                rerouted_lons = [p[1] for p in rerouted_path_latlon]
+                rerouted_lats = [p[0] for p in rerouted_path_latlon]
+                ax.plot(rerouted_lons, rerouted_lats, color='magenta', linewidth=3, linestyle='--', label="D* Lite Rerouted Path")
+                print(f"D* Lite rerouted path found with {len(rerouted_path_latlon)} points.")
+            else:
+                print("No D* Lite rerouted path found.")
+        else:
+            print("Not enough landmark points to simulate D* Lite rerouting.")
+
         plt.show()
 
     else:
