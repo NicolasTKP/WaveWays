@@ -1,76 +1,10 @@
 import heapq
-from math import radians, sin, cos, sqrt, atan2
 import numpy as np
 import xarray as xr
 from shapely.geometry import Point, Polygon
 
-# Helper functions copied from main.py for now, will refactor later if needed
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat / 2)**2 + cos(lat1) * cos(lat2) * sin(dlon / 2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    distance = R * c
-    return distance
-
-def create_bathymetry_grid(ds_subset, min_lon, max_lon, min_lat, max_lat, cell_size_m=500, vessel_height=0):
-    """
-    Creates a grid (maze) from bathymetry data.
-    """
-    center_lat = (min_lat + max_lat) / 2
-    lat_deg_per_m = 1 / haversine(center_lat, 0, center_lat + 0.001, 0) * 0.001
-    lon_deg_per_m = 1 / haversine(center_lat, 0, center_lat, 0.001) * 0.001
-
-    lat_step = cell_size_m * lat_deg_per_m
-    lon_step = cell_size_m * lon_deg_per_m
-
-    num_lat_cells = int(np.ceil((max_lat - min_lat) / lat_step))
-    num_lon_cells = int(np.ceil((max_lon - min_lon) / lon_step))
-
-    grid = np.zeros((num_lat_cells, num_lon_cells), dtype=int)
-    elevation_data = np.zeros((num_lat_cells, num_lon_cells), dtype=float)
-    grid_lats = np.linspace(min_lat, max_lat, num_lat_cells)
-    grid_lons = np.linspace(min_lon, max_lon, num_lon_cells)
-
-    for r in range(num_lat_cells):
-        for c in range(num_lon_cells):
-            cell_lat = grid_lats[r] + lat_step / 2
-            cell_lon = grid_lons[c] + lon_step / 2
-
-            try:
-                elevation = ds_subset['elevation'].sel(lat=cell_lat, lon=cell_lon, method='nearest').item()
-            except KeyError:
-                elevation = 0
-
-            elevation_data[r, c] = elevation
-
-            if elevation >= -vessel_height:
-                grid[r, c] = 1 
-            else:
-                grid[r, c] = 0 
-
-    elevation_da = xr.DataArray(
-        elevation_data,
-        coords={'lat': grid_lats, 'lon': grid_lons},
-        dims=['lat', 'lon']
-    )
-    return grid.tolist(), grid_lats, grid_lons, lat_step, lon_step, elevation_da
-
-def lat_lon_to_grid_coords(lat, lon, min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells):
-    """Converts latitude and longitude to grid (row, col) coordinates."""
-    row = int((lat - min_lat) / lat_step)
-    col = int((lon - min_lon) / lon_step)
-    row = max(0, min(row, num_lat_cells - 1))
-    col = max(0, min(col, num_lon_cells - 1))
-    return row, col
-
-def grid_coords_to_lat_lon(row, col, min_lat, min_lon, lat_step, lon_step):
-    """Converts grid (row, col) coordinates to approximate latitude and longitude (center of cell)."""
-    lat = min_lat + row * lat_step + lat_step / 2
-    lon = min_lon + col * lon_step + lon_step / 2
-    return lat, lon
+# Import common utilities from utils.py
+from utils import haversine, create_bathymetry_grid, lat_lon_to_grid_coords, grid_coords_to_lat_lon
 
 # D* Lite Implementation
 class DStarLite:
