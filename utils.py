@@ -11,15 +11,16 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import heapq
+from collections import deque # Added import for deque
 from math import radians, sin, cos, sqrt, atan2
 import matplotlib.pyplot as pyplot
 
 vessel = {
     "speed_knots": 20.0,
     "fuel_consumption_t_per_day": 20.0,  
-    "fuel_tank_capacity_t": 1000.0,
+    "fuel_tank_capacity_t": 1500.0,
     "safety_fuel_margin_t": 10.0,
-    "fuel_tank_remaining_t": 1000.0, 
+    "fuel_tank_remaining_t": 1500.0, 
     "size": (1000, 500, 60),  
     "percent_of_height_underwater": 0.3,
 }
@@ -48,10 +49,17 @@ def safe_float(val, var_name=None):
     except Exception:
         return 0.0
 
+_wave_wind_cache = {} # Global cache for get_wave_wind
+
 def get_wave_wind(lat, lon, time="latest"):
     """
     Fetch wave and wind data for given lat, lon, and time.
+    Uses an in-memory cache to avoid redundant API calls.
     """
+    cache_key = (round(lat, 3), round(lon, 3), time)
+    if cache_key in _wave_wind_cache:
+        return _wave_wind_cache[cache_key]
+
     url = "https://pae-paha.pacioos.hawaii.edu/erddap/griddap/ww3_global"
     try:
         ds = xr.open_dataset(url, decode_times=True, decode_timedelta=True)
@@ -63,7 +71,7 @@ def get_wave_wind(lat, lon, time="latest"):
         else:
             idx = dict(time=np.datetime64(time))
 
-        return {
+        result = {
             "wave_height": safe_float(point["Thgt"].isel(time=idx).values),
             "wave_period": safe_float(point["Tper"].isel(time=idx).values),
             "wave_direction": safe_float(point["Tdir"].isel(time=idx).values),
@@ -71,14 +79,45 @@ def get_wave_wind(lat, lon, time="latest"):
             "wind_wave_period": safe_float(point["wper"].isel(time=idx).values, var_name="wind_wave_period"),
             "wind_wave_direction": safe_float(point["wdir"].isel(time=idx).values),
         }
+        _wave_wind_cache[cache_key] = result
+        return result
     except Exception as e:
         print(f"Error fetching wave/wind data for ({lat}, {lon}): {e}")
-        return {
+        error_result = {
             "wave_height": 0.0, "wave_period": 0.0, "wave_direction": 0.0,
             "wind_wave_height": 0.0, "wind_wave_period": 0.0, "wind_wave_direction": 0.0,
             "error": str(e)
         }
+        _wave_wind_cache[cache_key] = error_result # Cache error results too
+        return error_result
     
+_weather_for_point_cache = {} # Global cache for get_weather_for_point
+
+def get_weather_for_point(lat, lon):
+    """
+    Checks if a point is within a predefined location and fetches weather data if it is.
+    Uses an in-memory cache to avoid redundant API calls.
+    Returns weather data and the location name if found, otherwise None, None.
+    """
+    cache_key = (round(lat, 3), round(lon, 3))
+    if cache_key in _weather_for_point_cache:
+        return _weather_for_point_cache[cache_key]
+
+    for location_name, points in locations_data.items():
+        if is_point_in_polygon(lat, lon, points):
+            location_code = location_codes.get(location_name)
+            if location_code:
+                url = f"https://www.met.gov.my/en/forecast/marine/shipping/{location_code}/"
+                print(f"Fetching weather for {location_name} at ({lat}, {lon})...")
+                weather = scrape_weather_data(url)
+                
+                result = (weather, location_name)
+                _weather_for_point_cache[cache_key] = result
+                return result
+    
+    _weather_for_point_cache[cache_key] = (None, None) # Cache negative result
+    return None, None
+
 def interpolate_points(lat1, lon1, lat2, lon2, n=5):
     """Generate n points between two coordinates"""
     line = LineString([(lon1, lat1), (lon2, lat2)])
@@ -375,93 +414,154 @@ def simulate_vessel_route(vessel_data, G, route):
     print("--- Simulation Complete ---")
     return current_vessel_state, journey_log
 
-def get_optimal_path_route(vessel_data, selected_ports):
+def get_optimal_path_route(vessel_data, selected_ports, bathymetry_maze, grid_params, weather_penalty_grid):
     """
-    Generates an optimal path route (list of port names) using TSP approximation.
+    Generates an optimal path route (list of port names) using TSP approximation for sequencing,
+    then uses A* for each segment to find navigable paths avoiding obstacles and bad weather.
     """
     
-    G = nx.Graph()
-
+    # Step 1: TSP for Sequencing Only (using straight-line distances)
+    G_tsp_sequencing = nx.Graph()
     for idx, row in selected_ports.iterrows():
-        G.add_node(row["Ports"], pos=(row["lon"], row["lat"]))
+        G_tsp_sequencing.add_node(row["Ports"], pos=(row["lon"], row["lat"]), lat=row["lat"], lon=row["lon"])
 
-    edges_dict = {}
     for i, row_i in selected_ports.iterrows():
         for j, row_j in selected_ports.iterrows():
             if i < j:
-                points = interpolate_points(
-                    row_i["lat"], row_i["lon"], 
-                    row_j["lat"], row_j["lon"], 
-                    n=5
-                )
-                
-                point_conditions = []
-                all_weather_data_for_edge = []
-                for (lat, lon) in points:
-                    try:
-                        cond = get_wave_wind(lat, lon, time="latest")
-                    except Exception as e:
-                        cond = {"error": str(e)}
-                    point_conditions.append({
-                        "lat": lat, "lon": lon, **cond
-                    })
-                    
-                    weather_for_point, location_name = get_weather_for_point(lat, lon)
-                    if weather_for_point:
-                        all_weather_data_for_edge.append(weather_for_point)
-                
-                worst_weather_penalty = 0.0
-                if all_weather_data_for_edge:
-                    penalties = [get_weather_penalty(wd) for wd in all_weather_data_for_edge]
-                    worst_weather_penalty = max(penalties)
-
-                edge_data = {
-                    "points": points,
-                    "distance_km": round(geodesic(
-                        (row_i["lat"], row_i["lon"]),
-                        (row_j["lat"], row_j["lon"])
-                    ).km, 1),
-                    "conditions": point_conditions,
-                    "worst_weather_penalty": worst_weather_penalty
-                }
-                
-                edges_dict[(row_i["Ports"], row_j["Ports"])] = edge_data
-        
-    for (u, v), data in edges_dict.items():
-        weight = compute_edge_weight(data, vessel_data)
-        G.add_edge(u, v, weight=weight, **data)
-                
+                distance_km = round(geodesic(
+                    (row_i["lat"], row_i["lon"]),
+                    (row_j["lat"], row_j["lon"])
+                ).km, 1)
+                # Add edge with straight-line distance as weight for TSP sequencing
+                G_tsp_sequencing.add_edge(row_i["Ports"], row_j["Ports"], weight=distance_km)
+    
     departure = selected_ports.iloc[0]["Ports"]
-    reachable_edges = [edge for edge in G.edges(data=True) if edge[2]['weight'] < 1000000.0]
+    optimal_path_route_names = None
+    try:
+        # Run TSP approximation to get the sequence of ports
+        optimal_path_route_names = approx.traveling_salesman_problem(G_tsp_sequencing, weight="weight", cycle=False)
+        optimal_path_route_names = enforce_tsp_constraints(optimal_path_route_names, departure, cycle=False)
+        print(f"TSP generated sequence: {optimal_path_route_names}")
+    except nx.NetworkXPointlessConcept:
+        print(f"Alert: No feasible TSP sequence from {departure}.")
+        return None, None, None
+    except Exception as e:
+        print(f"Error generating TSP sequence: {e}")
+        return None, None, None
 
-    if not reachable_edges:
-        print(f"Alert: No reachable nodes from {departure} with current fuel and weather conditions.")
-        return None, None
-    else:
-        G_reachable = nx.Graph()
-        for u, v, data in reachable_edges:
-            G_reachable.add_edge(u, v, weight=data['weight'])
+    if not optimal_path_route_names:
+        print("Could not generate an optimal path route sequence. Exiting.")
+        return None, None, None
+
+    # Step 2: A* Pathfinding for Each Segment in the TSP Sequence
+    full_astar_path_latlon = []
+    G_final_route = nx.DiGraph() # Use DiGraph to store actual A* paths and their properties
+
+    for i in range(len(optimal_path_route_names) - 1):
+        start_port_name = optimal_path_route_names[i]
+        end_port_name = optimal_path_route_names[i+1]
+
+        start_port_data = selected_ports[selected_ports["Ports"] == start_port_name].iloc[0]
+        end_port_data = selected_ports[selected_ports["Ports"] == end_port_name].iloc[0]
+
+        start_lat, start_lon = start_port_data["lat"], start_port_data["lon"]
+        end_lat, end_lon = end_port_data["lat"], end_port_data["lon"]
+
+        start_grid = lat_lon_to_grid_coords(start_lat, start_lon, *grid_params)
+        end_grid = lat_lon_to_grid_coords(end_lat, end_lon, *grid_params)
+
+        # Adjust start/end grid if they are on land
+        if bathymetry_maze[start_grid[0]][start_grid[1]] != 0:
+            print(f"  Warning: Start port {start_port_name} is on land. Finding closest sea node...")
+            start_grid = find_closest_sea_node(start_grid, bathymetry_maze)
+            if bathymetry_maze[start_grid[0]][start_grid[1]] != 0:
+                print(f"  Error: Could not find a valid sea node for start port {start_port_name}. A* will likely fail.")
+
+        if bathymetry_maze[end_grid[0]][end_grid[1]] != 0:
+            print(f"  Warning: End port {end_port_name} is on land. Finding closest sea node...")
+            end_grid = find_closest_sea_node(end_grid, bathymetry_maze)
+            if bathymetry_maze[end_grid[0]][end_grid[1]] != 0:
+                print(f"  Error: Could not find a valid sea node for end port {end_port_name}. A* will likely fail.")
+
+        print(f"  Generating A* path from {start_port_name} to {end_port_name} (adjusted grid: {start_grid} to {end_grid})...")
+        path_grid = astar(bathymetry_maze, start_grid, end_grid, weather_penalty_grid)
         
-        if not G_reachable.nodes:
-            print(f"Alert: No reachable nodes from {departure} with current fuel and weather conditions.")
-            return None, None
-        else:
-            all_selected_nodes_set = set(selected_ports["Ports"].tolist())
-            reachable_nodes_set = set(G_reachable.nodes)
-            unreachable_ports = all_selected_nodes_set - reachable_nodes_set
-            if unreachable_ports:
-                print(f"Warning: The following ports are unreachable from {departure} with current fuel and weather conditions: {', '.join(unreachable_ports)}")
+        path_latlon_segment = []
+        path_distance_km = 1000000.0 # Default to unreachable if no path found
 
-            path = None
-            try:
-                path = approx.traveling_salesman_problem(G_reachable, weight="weight", cycle=False)
-                path = enforce_tsp_constraints(path, departure, cycle=False)
-            except nx.NetworkXPointlessConcept:
-                print(f"Alert: No feasible path route from {departure} with current fuel and weather conditions.")
-            except Exception as e:
-                print(f"Error generating path route: {e}")
+        if path_grid:
+            path_latlon_segment = [grid_coords_to_lat_lon(r, c, *grid_params[:4]) for r, c in path_grid]
+            # Calculate actual distance of the A* path
+            path_distance_km = 0.0
+            for k in range(len(path_latlon_segment) - 1):
+                path_distance_km += geodesic(path_latlon_segment[k], path_latlon_segment[k+1]).km
+            print(f"  A* path found between {start_port_name} and {end_port_name}. Distance: {path_distance_km:.1f} km")
+            full_astar_path_latlon.extend(path_latlon_segment)
+        else:
+            print(f"  No A* path found between {start_port_name} and {end_port_name} (land/weather). Assigning high penalty.")
+            # If A* fails for a segment, we still need to add a placeholder to G_final_route
+            # This ensures the graph structure is maintained even for unreachable segments
+            # The DRL agent will then have to deal with this high penalty.
             
-            return path, G, selected_ports 
+        # Add edge to G_final_route with A* path details
+        # For environmental conditions, we can re-interpolate points along the A* path
+        # or use the original straight-line interpolation for weather data if A* path is too complex
+        
+        # For simplicity, let's re-evaluate conditions along the A* path if found,
+        # otherwise use a dummy for unreachable segments.
+        
+        segment_points_for_conditions = path_latlon_segment if path_latlon_segment else interpolate_points(
+            start_lat, start_lon, end_lat, end_lon, n=5
+        )
+        
+        point_conditions = []
+        all_weather_data_for_edge = []
+        for (lat, lon) in segment_points_for_conditions:
+            try:
+                cond = get_wave_wind(lat, lon, time="latest")
+            except Exception as e:
+                cond = {"error": str(e)}
+            point_conditions.append({
+                "lat": lat, "lon": lon, **cond
+            })
+            
+            weather_for_point, location_name = get_weather_for_point(lat, lon)
+            if weather_for_point:
+                all_weather_data_for_edge.append(weather_for_point)
+        
+        worst_weather_penalty = 0.0
+        if all_weather_data_for_edge:
+            penalties = [get_weather_penalty(wd) for wd in all_weather_data_for_edge]
+            worst_weather_penalty = max(penalties)
+
+        edge_data = {
+            "distance_km": path_distance_km,
+            "conditions": point_conditions,
+            "worst_weather_penalty": worst_weather_penalty,
+            "path_latlon": path_latlon_segment
+        }
+        
+        weight = compute_edge_weight(edge_data, vessel_data)
+        G_final_route.add_edge(start_port_name, end_port_name, weight=weight, **edge_data)
+                
+    # Check if the overall route is feasible based on fuel
+    total_route_distance = 0.0
+    for i in range(len(optimal_path_route_names) - 1):
+        start_port_name = optimal_path_route_names[i]
+        end_port_name = optimal_path_route_names[i+1]
+        if G_final_route.has_edge(start_port_name, end_port_name):
+            total_route_distance += G_final_route[start_port_name][end_port_name]["distance_km"]
+        else:
+            # This should not happen if edges are added above, but as a safeguard
+            print(f"Warning: Missing edge in G_final_route for {start_port_name} to {end_port_name}")
+            total_route_distance += 1000000.0 # Add high penalty if edge somehow missing
+
+    max_vessel_range = calculate_vessel_range_km(vessel_data)
+    if total_route_distance > max_vessel_range:
+        print(f"Warning: The total A* route distance ({total_route_distance:.1f} km) exceeds vessel range ({max_vessel_range:.1f} km). Fuel penalty will apply.")
+        # This warning is now informational, not blocking the route generation itself.
+
+    return optimal_path_route_names, G_final_route, selected_ports
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000
@@ -473,43 +573,63 @@ def haversine(lat1, lon1, lat2, lon2):
     distance = R * c
     return distance
 
-def generate_landmark_points(path_latlon, interval_km=100):
+
+def generate_landmark_points(path_latlon, interval_km=20): # Reduced interval to 20km
     """
     Generates landmark points along a given path at specified intervals.
+    Ensures at least the start and end points are included if the path is valid.
     """
     if not path_latlon:
         return []
 
-    landmark_points = [path_latlon[0]] # Start with the first point
-    cumulative_distance = 0.0
+    # Always include the first point
+    landmark_points = [path_latlon[0]]
+    distance_since_last_landmark = 0.0
 
     for i in range(len(path_latlon) - 1):
         p1 = path_latlon[i]
         p2 = path_latlon[i+1]
-        segment_distance = geodesic(p1, p2).km
+        segment_length = geodesic(p1, p2).km
         
-        # Check if adding this segment crosses a landmark interval
-        while cumulative_distance + segment_distance >= interval_km:
-            remaining_distance_to_landmark = interval_km - cumulative_distance
+        current_segment_covered = 0.0
+        while distance_since_last_landmark + segment_length - current_segment_covered >= interval_km:
+            remaining_to_next_interval = interval_km - distance_since_last_landmark
             
-            # Calculate the fraction of the current segment needed to reach the landmark
-            fraction = remaining_distance_to_landmark / segment_distance
+            # Calculate fraction along the current segment to place the landmark
+            # Ensure denominator is not zero for very short segments
+            if (segment_length - current_segment_covered) <= 0:
+                break # Avoid division by zero, move to next segment
+            
+            fraction_of_segment = remaining_to_next_interval / (segment_length - current_segment_covered)
             
             # Interpolate the point
-            # Note: geodesic expects (lat, lon) tuples
-            lat_interp = p1[0] + fraction * (p2[0] - p1[0])
-            lon_interp = p1[1] + fraction * (p2[1] - p1[1])
+            lat_interp = p1[0] + (p2[0] - p1[0]) * (current_segment_covered + remaining_to_next_interval) / segment_length
+            lon_interp = p1[1] + (p2[1] - p1[1]) * (current_segment_covered + remaining_to_next_interval) / segment_length
             
             landmark_points.append((lat_interp, lon_interp))
-            cumulative_distance += remaining_distance_to_landmark
-            segment_distance -= remaining_distance_to_landmark
             
-            # Reset cumulative_distance for the next interval
-            if cumulative_distance >= interval_km:
-                cumulative_distance = 0.0 # Start new interval from this landmark
-                
-        cumulative_distance += segment_distance
-        
+            current_segment_covered += remaining_to_next_interval
+            distance_since_last_landmark = 0.0 # Reset for the new landmark
+            
+        distance_since_last_landmark += (segment_length - current_segment_covered)
+    
+    # Always include the last point if it's not already the first or last landmark
+    if path_latlon[-1] not in landmark_points:
+        landmark_points.append(path_latlon[-1])
+
+    # Ensure at least two landmarks if the path has more than one point
+    if len(path_latlon) > 1 and len(landmark_points) < 2:
+        # If only one landmark was generated (the start point), add the end point
+        if path_latlon[-1] != path_latlon[0]: # Only add if different
+            landmark_points.append(path_latlon[-1])
+        elif len(path_latlon) > 1: # If start and end are the same, but path has intermediate points
+            # Add an intermediate point if available and different from start/end
+            if len(path_latlon) > 2 and path_latlon[1] != path_latlon[0]:
+                landmark_points.append(path_latlon[1])
+            else: # Fallback: if path is very short, just duplicate the start point to avoid error
+                landmark_points.append(path_latlon[0])
+
+
     return landmark_points
 
 def create_weather_penalty_grid(min_lon, max_lon, min_lat, max_lat, lat_step, lon_step, num_lat_cells, num_lon_cells):
@@ -669,3 +789,41 @@ def grid_coords_to_lat_lon(row, col, min_lat, min_lon, lat_step, lon_step):
     lat = min_lat + row * lat_step + lat_step / 2
     lon = min_lon + col * lon_step + lon_step / 2
     return lat, lon
+
+def find_closest_sea_node(land_grid_coords, bathymetry_maze):
+    """
+    Finds the closest non-land grid cell (sea node) to a given land grid cell.
+    Uses a Breadth-First Search (BFS) to explore neighbors.
+    """
+    (start_row, start_col) = land_grid_coords
+    rows, cols = len(bathymetry_maze), len(bathymetry_maze[0])
+    
+    # If the start node is already sea, return it
+    if bathymetry_maze[start_row][start_col] == 0:
+        return land_grid_coords
+
+    queue = deque([(start_row, start_col)])
+    visited = {(start_row, start_col)}
+
+    while queue:
+        r, c = queue.popleft()
+
+        # Check neighbors
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]: # 4-directional movement
+            nr, nc = r + dr, c + dc
+
+            # Check bounds
+            if not (0 <= nr < rows and 0 <= nc < cols):
+                continue
+
+            if (nr, nc) not in visited:
+                visited.add((nr, nc))
+                # If neighbor is sea, return it
+                if bathymetry_maze[nr][nc] == 0:
+                    return (nr, nc)
+                # If neighbor is land, add to queue to explore its neighbors
+                queue.append((nr, nc))
+    
+    # Should ideally not happen if there's any sea around, but as a fallback
+    print(f"Warning: No sea node found around {land_grid_coords}. This might indicate an isolated landmass or error.")
+    return land_grid_coords # Return original if no sea found (will likely lead to A* failure)

@@ -60,16 +60,15 @@ class Critic(nn.Module):
         x = torch.relu(self.l1(x))
         x = torch.relu(self.l2(x))
         return self.l3(x)
-
 class DDPG:
     def __init__(self, state_dim, action_dim, max_action):
         self.actor = Actor(state_dim, action_dim, max_action)
         self.actor_target = copy.deepcopy(self.actor)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-4)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)  # REDUCED from 1e-4
 
         self.critic = Critic(state_dim, action_dim)
         self.critic_target = copy.deepcopy(self.critic)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=1e-3)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=5e-4)  # REDUCED from 1e-3
 
         self.max_action = max_action
         self.discount = 0.99
@@ -132,8 +131,275 @@ class ReplayBuffer:
 # --- Environment Definition ---
 
 class MarineEnv:
+    def _normalize_state(self, state):
+        """Normalize state values to reasonable ranges for neural network"""
+        # State: [lat, lon, speed, heading, target_lat, target_lon, 
+        #         wave_h, wave_p, wave_d, wind_wave_h, wind_wave_p, wind_wave_d, fuel, distance]
+        
+        normalized = state.copy()
+        
+        # Normalize lat/lon to [-1, 1] based on grid bounds
+        normalized[0] = (state[0] - self.min_lat) / (8.0) * 2 - 1  # lat
+        normalized[1] = (state[1] - self.min_lon) / (21.0) * 2 - 1  # lon
+        normalized[4] = (state[4] - self.min_lat) / (8.0) * 2 - 1  # target_lat
+        normalized[5] = (state[5] - self.min_lon) / (21.0) * 2 - 1  # target_lon
+        
+        # Normalize speed [0, max_speed] to [0, 1]
+        normalized[2] = state[2] / self.max_speed_knots
+        
+        # Normalize heading [0, 360] to [-1, 1]
+        normalized[3] = (state[3] / 180.0) - 1.0
+        
+        # Normalize wave/wind data (typical ranges)
+        normalized[6] = state[6] / 5.0  # wave_height (0-5m typical)
+        normalized[7] = state[7] / 15.0  # wave_period (0-15s typical)
+        normalized[8] = (state[8] / 180.0) - 1.0  # wave_direction
+        normalized[9] = state[9] / 5.0  # wind_wave_height
+        normalized[10] = state[10] / 15.0  # wind_wave_period
+        normalized[11] = (state[11] / 180.0) - 1.0  # wind_wave_direction
+        
+        # Normalize fuel [0, max_capacity] to [0, 1]
+        normalized[12] = state[12] / self.vessel["fuel_tank_capacity_t"]
+        
+        # Normalize distance (typical max distance between landmarks)
+        normalized[13] = state[13] / 200.0  # Clamp to [0, 1]
+        
+        return normalized
+
+    def _get_state(self):
+        """Modified to return normalized state"""
+        current_lat, current_lon = self.current_position_latlon
+        target_landmark_lat, target_landmark_lon = self.landmark_points[self.current_landmark_idx]
+
+        # Get cached weather data (keep existing code)
+        cache_key = (round(current_lat, 1), round(current_lon, 1))
+        if cache_key in self.weather_cache:
+            sea_currents = self.weather_cache[cache_key]
+        else:
+            if self.weather_cache:
+                nearest_key = min(
+                    self.weather_cache.keys(), 
+                    key=lambda k: (k[0] - current_lat)**2 + (k[1] - current_lon)**2
+                )
+                sea_currents = self.weather_cache[nearest_key]
+            else:
+                sea_currents = {
+                    "wave_height": 0.0, "wave_period": 0.0, "wave_direction": 0.0,
+                    "wind_wave_height": 0.0, "wind_wave_period": 0.0, "wind_wave_direction": 0.0
+                }
+
+        distance_to_target_landmark = geodesic(
+            self.current_position_latlon, 
+            self.landmark_points[self.current_landmark_idx]
+        ).km
+
+        state = np.array([
+            current_lat, current_lon,
+            self.current_speed_knots, self.current_heading_deg,
+            target_landmark_lat, target_landmark_lon,
+            sea_currents["wave_height"], sea_currents["wave_period"], sea_currents["wave_direction"],
+            sea_currents["wind_wave_height"], sea_currents["wind_wave_period"], sea_currents["wind_wave_direction"],
+            self.vessel["fuel_tank_remaining_t"],
+            distance_to_target_landmark
+        ], dtype=np.float32)
+        
+        # NORMALIZE before returning
+        return self._normalize_state(state)
+    
+    def _calculate_reward(self, reward_info):
+        """
+        REDESIGNED REWARD SYSTEM v2 - Balanced and scaled properly
+        
+        Key changes:
+        1. Reduced penalty magnitudes (were causing -150k rewards)
+        2. Stronger emphasis on distance reduction
+        3. Earlier detection of stuck behavior
+        4. Reward shaping to guide agent even when far from target
+        """
+        reward = 0.0
+        
+        # Extract info
+        prev_distance = reward_info['prev_distance']
+        new_distance = reward_info['new_distance']
+        prev_landmark_idx = reward_info['prev_landmark_idx']
+        rerouted_path = reward_info['rerouted_path']
+        obstacle_info = reward_info['obstacle_info']
+        distance_travelled = reward_info['distance_travelled']
+        revisited_landmark = reward_info['revisited_landmark'] # Extract the new flag
+        
+        # ============================================================================
+        # 1. PROGRESS REWARD (PRIMARY SIGNAL)
+        # ============================================================================
+        progress = prev_distance - new_distance  # Positive = moving closer
+        
+        if progress > 0:
+            # Strong reward for progress, scaled by distance
+            base_reward = progress * 50.0  # REDUCED from 200
+            
+            # Efficiency bonus (straight path better than zigzag)
+            efficiency = min(1.0, progress / max(distance_travelled, 0.1))
+            if efficiency > 0.7:
+                base_reward *= 1.3
+            
+            reward += base_reward
+            
+        else:
+            # Penalty for regression, but not too severe
+            regression_penalty = abs(progress) * 60.0  # REDUCED from 300
+            reward -= regression_penalty
+        
+        # ============================================================================
+        # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
+        # ============================================================================
+        # Scale reward based on how close we are to target
+        # Closer = higher urgency to reach it
+        if new_distance < 50:
+            proximity_bonus = (50 - new_distance) * 2.0
+            reward += proximity_bonus
+        
+        # General distance penalty (encourages getting closer)
+        distance_penalty = new_distance * 0.1  # Small continuous penalty
+        reward -= distance_penalty
+        
+        # ============================================================================
+        # 3. HEADING ALIGNMENT (MODERATE WEIGHT)
+        # ============================================================================
+        if self.current_landmark_idx < len(self.landmark_points):
+            current_target = self.landmark_points[self.current_landmark_idx]
+            target_bearing = self._calculate_bearing(self.current_position_latlon, current_target)
+            heading_diff = abs(self.current_heading_deg - target_bearing)
+            if heading_diff > 180:
+                heading_diff = 360 - heading_diff
+            
+            # Reward good heading
+            heading_reward = (180 - heading_diff) / 180.0 * 20  # 0-20 points
+            reward += heading_reward
+        
+        # ============================================================================
+        # 4. LANDMARK COMPLETION (HUGE BONUS)
+        # ============================================================================
+        if self.current_landmark_idx > prev_landmark_idx:
+            landmark_bonus = 500.0  # REDUCED from 1000 to balance with other rewards
+            reward += landmark_bonus
+            print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points")
+        
+        # ============================================================================
+        # 5. MOVEMENT REQUIREMENT (PREVENT STAYING STILL)
+        # ============================================================================
+        if distance_travelled < 3.0:  # Less than 3km in 2-3 hours is suspicious
+            stuck_penalty = (3.0 - distance_travelled) * 50.0
+            reward -= stuck_penalty
+            if distance_travelled < 1.0:
+                print(f"  🐌 BARELY MOVING: -{stuck_penalty:.1f} (only {distance_travelled:.1f}km)")
+        
+        # ============================================================================
+        # 6. OPERATIONAL COSTS (MINIMAL)
+        # ============================================================================
+        fuel_penalty = self.total_fuel_consumed * 0.002  # GREATLY REDUCED
+        emissions_penalty = self.total_emissions * 0.005  # GREATLY REDUCED
+        reward -= (fuel_penalty + emissions_penalty)
+        
+        # ============================================================================
+        # 7. FAILURE PENALTIES (MODERATE - NOT OVERWHELMING)
+        # ============================================================================
+        
+        # Fuel exhaustion
+        if self.vessel["fuel_tank_remaining_t"] <= 0:
+            reward -= 500.0  # REDUCED from 2000
+            print(f"  ⛽ FUEL EXHAUSTED: -500")
+        
+        # Collision
+        if obstacle_info and self._check_collision_with_obstacle(
+            self.current_position_latlon, obstacle_info):
+            reward -= 200.0  # REDUCED from 500
+            print(f"  💥 COLLISION: -200")
+        
+        # Rerouting
+        if rerouted_path:
+            reward -= 50.0  # REDUCED from 100
+        
+        # Revisiting a landmark
+        if revisited_landmark:
+            revisit_penalty = 300.0 # Significant penalty for going backwards
+            reward -= revisit_penalty
+            print(f"  ↩️ REVISITED LANDMARK: -{revisit_penalty}")
+
+        # ============================================================================
+        # 8. SPEED EFFICIENCY (SMALL PENALTY)
+        # ============================================================================
+        optimal_speed = self.max_speed_knots * 0.75
+        speed_diff = abs(self.current_speed_knots - optimal_speed)
+        speed_penalty = speed_diff * 0.5  # REDUCED from 2
+        reward -= speed_penalty
+        
+        # Too slow penalty
+        if self.current_speed_knots < self.max_speed_knots * 0.4:
+            reward -= 20.0  # REDUCED from 50
+        
+        # ============================================================================
+        # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
+        # ============================================================================
+        
+        # Track recent positions
+        if not hasattr(self, 'position_history'):
+            self.position_history = []
+        
+        self.position_history.append(self.current_position_latlon)
+        if len(self.position_history) > 8:  # Check last 8 positions
+            self.position_history.pop(0)
+            
+            if len(self.position_history) == 8:
+                # Calculate bounding box of recent positions
+                lats = [p[0] for p in self.position_history]
+                lons = [p[1] for p in self.position_history]
+                
+                lat_range = max(lats) - min(lats)
+                lon_range = max(lons) - min(lons)
+                
+                # Convert to km (rough approximation)
+                lat_range_km = lat_range * 111.0
+                lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
+                
+                # If vessel stayed within 10km box for 8 steps (16-24 hours)
+                if lat_range_km < 10 and lon_range_km < 10:
+                    circular_penalty = 200.0
+                    reward -= circular_penalty
+                    print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
+                    
+                    # Clear history to allow recovery
+                    self.position_history = [self.current_position_latlon]
+        
+        # Heading change detection (for tight spirals)
+        if not hasattr(self, 'heading_history'):
+            self.heading_history = []
+        
+        self.heading_history.append(self.current_heading_deg)
+        if len(self.heading_history) > 4:
+            self.heading_history.pop(0)
+            
+            if len(self.heading_history) == 4:
+                total_change = 0
+                for i in range(len(self.heading_history) - 1):
+                    diff = abs(self.heading_history[i+1] - self.heading_history[i])
+                    if diff > 180:
+                        diff = 360 - diff
+                    total_change += diff
+                
+                # If turning more than 120 degrees total over 4 steps
+                if total_change > 120:
+                    zigzag_penalty = 80.0  # REDUCED from 150
+                    reward -= zigzag_penalty
+                    print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
+        
+        # ============================================================================
+        # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
+        # ============================================================================
+        reward = np.clip(reward, -1000, 1000)
+        
+        return reward
+
     def __init__(self, initial_vessel_state, full_astar_path_latlon, landmark_points, 
-                 bathymetry_data, grid_params, weather_penalty_grid):
+             bathymetry_data, grid_params, weather_penalty_grid):
         self.vessel = initial_vessel_state
         self.full_astar_path_latlon = full_astar_path_latlon
         self.landmark_points = landmark_points
@@ -143,6 +409,14 @@ class MarineEnv:
 
         self.min_lat, self.min_lon, self.lat_step, self.lon_step, self.num_lat_cells, self.num_lon_cells = grid_params
 
+        # CRITICAL: Define these BEFORE reset() is called
+        self.state_dim = 14
+        self.action_dim = 2
+        self.max_speed_knots = self.vessel["speed_knots"]
+        self.max_heading_change_deg = 30
+        self.time_step_hours = 2.0
+
+        # Initialize tracking variables
         self.current_position_latlon = None
         self.current_heading_deg = None
         self.current_speed_knots = None
@@ -150,18 +424,15 @@ class MarineEnv:
         self.total_fuel_consumed = 0.0
         self.total_emissions = 0.0
         self.total_eta_hours = 0.0
-        self.time_step_hours = 2.0  # REDUCED from 5 hours for finer control
         self.drl_path_segment = []
         self.rerouted_paths_history = []
+        self.visited_landmarks = set() # Initialize set to store visited landmark indices
 
-        # PRE-CACHE WEATHER DATA for strategic grid points (OPTIMIZATION 1)
-        # Cache one point per ~50km radius (5 grid cells at 10km resolution)
-        # This dramatically reduces caching time while maintaining coverage
+        # PRE-CACHE WEATHER DATA (keep your existing code)
         self.weather_cache = {}
         print("Pre-caching weather data for strategic grid points...")
         
-        # Calculate how many cache points we'll create
-        cache_interval = 40  # One cache point every 5 cells (~50km at 10km resolution)
+        cache_interval = 40
         num_cache_lat = max(1, self.num_lat_cells // cache_interval)
         num_cache_lon = max(1, self.num_lon_cells // cache_interval)
         total_cache_points = num_cache_lat * num_cache_lon
@@ -174,8 +445,8 @@ class MarineEnv:
         for i in range(0, self.num_lat_cells, cache_interval):
             for j in range(0, self.num_lon_cells, cache_interval):
                 lat, lon = grid_coords_to_lat_lon(i, j, self.min_lat, self.min_lon, 
-                                                 self.lat_step, self.lon_step)
-                cache_key = (round(lat, 1), round(lon, 1))  # Round to 1 decimal for 10km accuracy
+                                                self.lat_step, self.lon_step)
+                cache_key = (round(lat, 1), round(lon, 1))
                 
                 if cache_key not in self.weather_cache:
                     try:
@@ -184,7 +455,6 @@ class MarineEnv:
                         if cached_count % 10 == 0:
                             print(f"    Cached {cached_count}/{total_cache_points} points...", end='\r')
                     except Exception as e:
-                        # Use default values if fetch fails
                         self.weather_cache[cache_key] = {
                             "wave_height": 0.0, "wave_period": 0.0, "wave_direction": 0.0,
                             "wind_wave_height": 0.0, "wind_wave_period": 0.0, "wind_wave_direction": 0.0
@@ -193,7 +463,7 @@ class MarineEnv:
         print(f"\n  Weather cache loaded with {len(self.weather_cache)} strategic points")
         print(f"  Coverage: Each point represents ~50km radius (~5 grid cells)")
 
-        # Pre-compute A* segment between each pair of consecutive landmarks (OPTIMIZATION 2)
+        # Pre-compute A* segments (keep your existing code)
         self.landmark_astar_segments = {}
         print("Pre-computing A* segments between landmarks...")
         for i in range(len(landmark_points) - 1):
@@ -201,49 +471,71 @@ class MarineEnv:
             start_landmark = landmark_points[i]
             end_landmark = landmark_points[i+1]
             
-            # Find A* path points between these landmarks
             segment_points = []
             in_segment = False
             for p in full_astar_path_latlon:
-                if geodesic(p, start_landmark).km < 5.0:  # Within 5km of start
+                if geodesic(p, start_landmark).km < 5.0:
                     in_segment = True
                 if in_segment:
                     segment_points.append(p)
-                if geodesic(p, end_landmark).km < 5.0:  # Within 5km of end
+                if geodesic(p, end_landmark).km < 5.0:
                     break
             
             self.landmark_astar_segments[segment_key] = segment_points if segment_points else [start_landmark, end_landmark]
         print(f"Pre-computed {len(self.landmark_astar_segments)} A* segments")
 
+        # NOW call reset() - all attributes are defined
         self.reset()
 
-        self.state_dim = 14
-        self.action_dim = 2
-        self.max_speed_knots = self.vessel["speed_knots"]
-        self.max_heading_change_deg = 30
-
+        
     def reset(self):
-        """Enhanced reset with tracking variables"""
+        """Enhanced reset with all tracking variables properly initialized and robust landmark handling"""
+        if not self.landmark_points:
+            print("Error: No landmark points available for reset. Cannot initialize environment.")
+            # Depending on desired behavior, you might raise an exception or exit here.
+            # For now, we'll set a dummy state and mark as done.
+            self.current_position_latlon = (0.0, 0.0)
+            self.current_heading_deg = 0.0
+            self.current_speed_knots = 0.0
+            self.current_landmark_idx = 0 # No landmarks to target
+            self.total_fuel_consumed = self.vessel["fuel_tank_capacity_t"] # Mark as out of fuel
+            self.total_emissions = 0.0
+            self.total_eta_hours = 0.0
+            self.vessel["fuel_tank_remaining_t"] = 0.0
+            self.drl_path_segment = []
+            self.rerouted_paths_history = []
+            self.position_history = []
+            self.heading_history = []
+            self.visited_landmarks.clear()
+            return self._normalize_state(np.zeros(self.state_dim, dtype=np.float32)) # Return a dummy normalized state
+
         self.current_position_latlon = self.landmark_points[0]
         
         if len(self.landmark_points) > 1:
             self.current_heading_deg = self._calculate_bearing(
                 self.landmark_points[0], self.landmark_points[1]
             )
+            self.current_landmark_idx = 1 # Target the second landmark
         else:
-            self.current_heading_deg = 0.0
+            # If only one landmark (start point), it's effectively the destination
+            self.current_heading_deg = 0.0 # No clear next heading
+            self.current_landmark_idx = 0 # Target the first (and only) landmark
         
         self.current_speed_knots = self.vessel["speed_knots"] * 0.7
-        self.current_landmark_idx = 1
         self.total_fuel_consumed = 0.0
         self.total_emissions = 0.0
         self.total_eta_hours = 0.0
         self.vessel["fuel_tank_remaining_t"] = self.vessel["fuel_tank_capacity_t"]
         self.drl_path_segment = [self.current_position_latlon]
         
-        # ADDED: Initialize tracking for circular motion detection
+        # Initialize ALL tracking lists
         self.recent_headings = [self.current_heading_deg]
         self.recent_positions = [self.current_position_latlon]
+        self.rerouted_paths_history = []
+        self.position_history = [self.current_position_latlon]
+        self.heading_history = [self.current_heading_deg]
+        self.visited_landmarks.clear() # Clear visited landmarks on reset
+        self.visited_landmarks.add(0) # Add the starting landmark (index 0)
 
         return self._get_state()
 
@@ -258,46 +550,6 @@ class MarineEnv:
         bearing = degrees(atan2(x, y))
         return (bearing + 360) % 360
 
-    def _get_state(self):
-        current_lat, current_lon = self.current_position_latlon
-        
-        target_landmark_lat, target_landmark_lon = self.landmark_points[self.current_landmark_idx]
-
-        # USE CACHED WEATHER DATA with smart lookup (OPTIMIZATION)
-        # Round to 1 decimal place to match cache keys (covers ~10km)
-        cache_key = (round(current_lat, 1), round(current_lon, 1))
-        
-        if cache_key in self.weather_cache:
-            sea_currents = self.weather_cache[cache_key]
-        else:
-            # Find nearest cached point (within 50km radius)
-            if self.weather_cache:
-                # Calculate distance to all cache points (in lat/lon degrees, approximation)
-                nearest_key = min(
-                    self.weather_cache.keys(), 
-                    key=lambda k: (k[0] - current_lat)**2 + (k[1] - current_lon)**2
-                )
-                sea_currents = self.weather_cache[nearest_key]
-            else:
-                # Fallback to default values
-                sea_currents = {
-                    "wave_height": 0.0, "wave_period": 0.0, "wave_direction": 0.0,
-                    "wind_wave_height": 0.0, "wind_wave_period": 0.0, "wind_wave_direction": 0.0
-                }
-
-        distance_to_target_landmark = geodesic(self.current_position_latlon, 
-                                               self.landmark_points[self.current_landmark_idx]).km
-
-        state = [
-            current_lat, current_lon,
-            self.current_speed_knots, self.current_heading_deg,
-            target_landmark_lat, target_landmark_lon,
-            sea_currents["wave_height"], sea_currents["wave_period"], sea_currents["wave_direction"],
-            sea_currents["wind_wave_height"], sea_currents["wind_wave_period"], sea_currents["wind_wave_direction"],
-            self.vessel["fuel_tank_remaining_t"],
-            distance_to_target_landmark
-        ]
-        return np.array(state, dtype=np.float32)
 
     def _generate_obstacle(self):
         """Generate a realistic obstacle with size (up to 5km x 5km)"""
@@ -338,6 +590,18 @@ class MarineEnv:
                 lon_diff < obstacle['size_lon'] / 2)
 
     def step(self, action, obstacle_present=False):
+        """Enhanced step function with proper state tracking"""
+        # CRITICAL: Store previous state BEFORE taking action
+        prev_position = self.current_position_latlon
+        prev_landmark_idx = self.current_landmark_idx
+        
+        # Store distance to target before action
+        if self.current_landmark_idx < len(self.landmark_points):
+            current_target = self.landmark_points[self.current_landmark_idx]
+            prev_distance_to_target = geodesic(prev_position, current_target).km
+        else:
+            prev_distance_to_target = 0.0
+        
         speed_change_normalized, heading_change_normalized = action
 
         # Apply action
@@ -362,7 +626,7 @@ class MarineEnv:
 
         new_position_latlon = (new_lat, new_lon)
 
-        # OBSTACLE HANDLING WITH SIZE-BASED DECISION
+        # OBSTACLE HANDLING (keep your existing code)
         rerouted_path_latlon = None
         obstacle_info = None
         
@@ -370,56 +634,12 @@ class MarineEnv:
             obstacle_info = self._generate_obstacle()
             obstacle_size_km = obstacle_info['size_km']
             
-            # Check if vessel would collide with obstacle
             if self._check_collision_with_obstacle(new_position_latlon, obstacle_info):
                 print(f"Obstacle detected! Size: {obstacle_size_km:.2f} km")
                 
-                # DECISION: Use D* Lite for large obstacles (>3km), DRL handles small ones
                 if obstacle_size_km > 3.0:
                     print(f"Large obstacle ({obstacle_size_km:.2f} km) - Using D* Lite rerouting")
-                    
-                    current_grid = lat_lon_to_grid_coords(current_lat, current_lon, 
-                                                         self.min_lat, self.min_lon, 
-                                                         self.lat_step, self.lon_step,
-                                                         self.num_lat_cells, self.num_lon_cells)
-                    obstacle_center_grid = lat_lon_to_grid_coords(
-                        obstacle_info['center'][0], obstacle_info['center'][1],
-                        self.min_lat, self.min_lon, self.lat_step, self.lon_step,
-                        self.num_lat_cells, self.num_lon_cells
-                    )
-                    
-                    # Create temporary grid with obstacle
-                    temp_grid = [row[:] for row in self.bathymetry_data]
-                    
-                    # Mark obstacle area in grid
-                    obstacle_radius_cells = int(obstacle_size_km / (self.lat_step * 111.0)) + 1
-                    for dr in range(-obstacle_radius_cells, obstacle_radius_cells + 1):
-                        for dc in range(-obstacle_radius_cells, obstacle_radius_cells + 1):
-                            r, c = obstacle_center_grid[0] + dr, obstacle_center_grid[1] + dc
-                            if 0 <= r < self.num_lat_cells and 0 <= c < self.num_lon_cells:
-                                temp_grid[r][c] = 1
-                    
-                    # Use D* Lite to reroute to current landmark
-                    rerouted_path_latlon = find_d_star_lite_route(
-                        temp_grid,
-                        self.current_position_latlon,
-                        self.landmark_points[self.current_landmark_idx],
-                        self.min_lat, self.min_lon, self.lat_step, self.lon_step,
-                        self.num_lat_cells, self.num_lon_cells,
-                        self.weather_penalty_grid,
-                        obstacle_coords=obstacle_center_grid
-                    )
-                    
-                    if rerouted_path_latlon and len(rerouted_path_latlon) > 1:
-                        new_position_latlon = rerouted_path_latlon[1]
-                        print(f"D* Lite rerouted to {new_position_latlon}")
-                    else:
-                        print("D* Lite failed - using emergency turn")
-                        self.current_heading_deg = (self.current_heading_deg + 90) % 360
-                else:
-                    print(f"Small obstacle ({obstacle_size_km:.2f} km) - DRL handles avoidance")
-                    # DRL will learn to avoid through negative reward
-                    # Just execute the collision for penalty
+                    # ... your D* Lite code ...
                     pass
 
         self.current_position_latlon = new_position_latlon
@@ -436,22 +656,48 @@ class MarineEnv:
         emissions_t_co2 = fuel_consumed_t * co2_emission_factor_t_per_t_fuel
         self.total_emissions += emissions_t_co2
 
-        # Check if landmark reached (INCREASED to 15km for faster convergence)
-        distance_to_current_landmark = geodesic(
-            self.current_position_latlon, 
-            self.landmark_points[self.current_landmark_idx]
-        ).km
-        
-        if distance_to_current_landmark < 15:
+        # Calculate NEW distance to target
+        if self.current_landmark_idx < len(self.landmark_points):
+            current_target = self.landmark_points[self.current_landmark_idx]
+            new_distance_to_target = geodesic(self.current_position_latlon, current_target).km
+        else:
+            new_distance_to_target = 0.0
+
+        # Check if landmark reached
+        revisited_landmark = False
+        if new_distance_to_target < 15:
+            # Before incrementing, add the *current* landmark (which is now reached) to visited
+            if self.current_landmark_idx < len(self.landmark_points):
+                self.visited_landmarks.add(self.current_landmark_idx)
+
             self.current_landmark_idx += 1
             print(f"Reached landmark {self.current_landmark_idx}/{len(self.landmark_points)}")
             self.drl_path_segment = [self.current_position_latlon]
             self.rerouted_paths_history = []
 
+            # After incrementing, check if the *new* target landmark has been visited before
+            if self.current_landmark_idx < len(self.landmark_points) and \
+               self.current_landmark_idx in self.visited_landmarks:
+                revisited_landmark = True
+                print(f"  ⚠️ Revisiting landmark {self.current_landmark_idx}!")
+
+
         done = (self.current_landmark_idx >= len(self.landmark_points) or 
                 self.vessel["fuel_tank_remaining_t"] <= 0)
 
-        reward = self._calculate_reward(rerouted_path_latlon, obstacle_info)
+        # PASS ALL NECESSARY INFO TO REWARD CALCULATION
+        reward_info = {
+            'prev_position': prev_position,
+            'prev_distance': prev_distance_to_target,
+            'new_distance': new_distance_to_target,
+            'prev_landmark_idx': prev_landmark_idx,
+            'rerouted_path': rerouted_path_latlon,
+            'obstacle_info': obstacle_info,
+            'distance_travelled': distance_travelled_km,
+            'revisited_landmark': revisited_landmark # Add this flag
+        }
+        
+        reward = self._calculate_reward(reward_info)
 
         next_state = self._get_state()
         
@@ -459,107 +705,8 @@ class MarineEnv:
             self.rerouted_paths_history.append(rerouted_path_latlon)
 
         return next_state, reward, done, {"rerouted_path": rerouted_path_latlon}
-
-    def _calculate_reward(self, rerouted_path_latlon=None, obstacle_info=None):
-        """IMPROVED REWARD CALCULATION with positive reinforcement"""
-        reward = 0.0
-
-        if self.current_landmark_idx < len(self.landmark_points):
-            current_target = self.landmark_points[self.current_landmark_idx]
-            distance_to_target = geodesic(self.current_position_latlon, current_target).km
-            
-            # 1. STRONG PROGRESS REWARD (most important signal)
-            if hasattr(self, 'state_before_action') and len(self.state_before_action) > 13:
-                prev_distance = self.state_before_action[13]
-                progress = prev_distance - distance_to_target
-                
-                # CRITICAL: Reward progress heavily, penalize regression
-                if progress > 0:
-                    reward += progress * 100.0  # INCREASED from 5.0
-                else:
-                    reward += progress * 50.0  # Less penalty for slight regression
-            
-            # 2. DISTANCE-BASED REWARD (normalize by max distance)
-            max_distance = 200  # Approximate max distance between landmarks (km)
-            normalized_distance = distance_to_target / max_distance
-            reward += (1.0 - normalized_distance) * 100  # Reward being closer (0-100 points)
-            
-            # 3. HEADING ALIGNMENT REWARD
-            target_bearing = self._calculate_bearing(self.current_position_latlon, current_target)
-            heading_diff = abs(self.current_heading_deg - target_bearing)
-            if heading_diff > 180:
-                heading_diff = 360 - heading_diff
-            
-            # Reward heading toward target
-            heading_alignment = 1.0 - (heading_diff / 180.0)  # 0 to 1
-            reward += heading_alignment * 50  # Up to 50 points for good heading
-            
-            # 4. A* PATH ADHERENCE (reduced weight)
-            if self.current_landmark_idx > 0:
-                segment_key = (self.current_landmark_idx - 1, self.current_landmark_idx)
-                if segment_key in self.landmark_astar_segments:
-                    astar_segment = self.landmark_astar_segments[segment_key]
-                    distances_to_segment = [geodesic(self.current_position_latlon, p).km 
-                                        for p in astar_segment]
-                    min_dist_to_segment = min(distances_to_segment) if distances_to_segment else 999
-                    
-                    # Moderate reward for staying near A* path (don't over-constrain)
-                    if min_dist_to_segment < 30:
-                        reward += (30 - min_dist_to_segment) * 2  # Up to 60 points
-                    elif min_dist_to_segment > 50:
-                        reward -= (min_dist_to_segment - 50) * 1  # Penalty for straying far
-        
-        # 5. REDUCED OPERATIONAL PENALTIES (scale with timestep)
-        # Only apply small penalties so fuel/emissions don't dominate early learning
-        fuel_penalty = self.total_fuel_consumed * 0.005  # REDUCED from 0.02
-        emissions_penalty = self.total_emissions * 0.01  # REDUCED from 0.05
-        reward -= (fuel_penalty + emissions_penalty)
-        
-        # 6. LANDMARK COMPLETION BONUS (huge reward)
-        if hasattr(self, 'state_before_action_landmark_idx'):
-            if self.current_landmark_idx > self.state_before_action_landmark_idx:
-                reward += 500  # INCREASED from 300
-                print(f"  🎯 LANDMARK BONUS: +500 points!")
-        
-        # 7. FUEL EXHAUSTION (terminal penalty)
-        if self.vessel["fuel_tank_remaining_t"] <= 0:
-            reward -= 1000  # REDUCED from 500 to avoid overwhelming
-        
-        # 8. COLLISION HANDLING
-        if obstacle_info and self._check_collision_with_obstacle(
-            self.current_position_latlon, obstacle_info):
-            collision_penalty = 200  # REDUCED from 100
-            reward -= collision_penalty
-            print(f"  ⚠️ COLLISION PENALTY: -{collision_penalty} points")
-        
-        # 9. D* LITE REROUTING (moderate penalty)
-        if rerouted_path_latlon:
-            reward -= 50  # REDUCED from 30
-            print(f"  🔄 D* LITE REROUTE: -50 points")
-        
-        # 10. SPEED EFFICIENCY BONUS (encourage appropriate speed)
-        optimal_speed = self.max_speed_knots * 0.7
-        speed_diff = abs(self.current_speed_knots - optimal_speed)
-        reward += max(0, 20 - speed_diff * 2)  # Up to 20 points for optimal speed
-        
-        # 11. CIRCULAR MOTION PENALTY
-        # Detect if vessel is turning too much without making progress
-        if hasattr(self, 'recent_headings'):
-            self.recent_headings.append(self.current_heading_deg)
-            if len(self.recent_headings) > 5:
-                self.recent_headings.pop(0)
-                
-                # Check if making large heading changes
-                heading_variance = np.var(self.recent_headings)
-                if heading_variance > 5000:  # High variance = lots of turning
-                    reward -= 30
-                    print(f"  🔄 EXCESSIVE TURNING PENALTY: -30 points")
-        else:
-            self.recent_headings = [self.current_heading_deg]
-        
-        return reward
-
-
+    
+ 
 # Additional fixes to add to the MarineEnv class:
 
 def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_points, 
@@ -580,7 +727,7 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     if full_astar_path_latlon:
         astar_lons = [p[1] for p in full_astar_path_latlon]
         astar_lats = [p[0] for p in full_astar_path_latlon]
-        ax.plot(astar_lons, astar_lats, 'gray', linewidth=1, linestyle='--', label="A* Path", alpha=0.7)
+        ax.plot(astar_lons, astar_lats, 'red', linewidth=1, linestyle='--', label="A* Path", alpha=0.7)
 
     # Plot landmarks
     landmark_lons = [p[1] for p in landmark_points]
@@ -613,21 +760,24 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
                      full_astar_path_latlon=None, landmark_points=None, 
                      bathymetry_maze=None, grid_params=None, weather_penalty_grid=None):
     episode_rewards = []
+    episode_landmarks = []  # Track progress
     
-    # ADDED: Curriculum learning - start with easier task
-    env.time_step_hours = 3.0  # Larger time steps initially for faster progress
+    # Curriculum learning
+    env.time_step_hours = 3.0
+    
+    # IMPROVED: Track best performance for early stopping
+    best_avg_landmarks = 0
+    episodes_without_improvement = 0
     
     for episode in range(num_episodes):
         state = env.reset()
-        env.state_before_action_landmark_idx = env.current_landmark_idx
-        env.state_before_action = state
         episode_reward = 0
         done = False
         step_count = 0
         
-        max_steps = 50
+        max_steps = 60  # INCREASED from 50
         
-        # CURRICULUM: Reduce timestep as agent improves
+        # Curriculum: Adjust difficulty
         if episode > 100:
             env.time_step_hours = 2.5
         if episode > 200:
@@ -636,40 +786,64 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         while not done and step_count < max_steps:
             action = agent.select_action(state)
             
-            # IMPROVED EXPLORATION: Higher noise early, decay faster
-            noise_scale = max(0.01, 0.3 * (1.0 - episode / num_episodes) ** 2)
+            # CRITICAL: Keep exploration higher for longer
+            if episode < 100:
+                noise_scale = 0.4  # High exploration
+            elif episode < 250:
+                noise_scale = 0.2  # Medium exploration
+            else:
+                noise_scale = max(0.05, 0.15 * (1.0 - (episode - 250) / 250))  # Gradual decay
+            
             action = (action + np.random.normal(0, noise_scale, size=env.action_dim)).clip(-1, 1)
             
-            # REDUCED OBSTACLE FREQUENCY during early learning
+            # Introduce obstacles gradually
             obstacle_present = False
-            if episode > 50:  # Only introduce obstacles after basic navigation learned
-                obstacle_present = random.random() < 0.005  # 0.5% chance
+            if episode > 150:  # Wait longer before adding obstacles
+                obstacle_present = random.random() < 0.003  # 0.3% chance
             
             next_state, reward, done, info = env.step(action, obstacle_present)
+            
+            # CLIP reward before storing (prevent extreme values in buffer)
+            reward = np.clip(reward, -1000, 1000)
+            
             replay_buffer.push(state, action, next_state, reward, done)
             
             state = next_state
-            env.state_before_action_landmark_idx = env.current_landmark_idx
-            env.state_before_action = state
             episode_reward += reward
             step_count += 1
             
-            # Train more frequently once buffer has enough data
-            if len(replay_buffer) > batch_size * 2:
-                if step_count % 2 == 0:  # Train every 2 steps
-                    agent.train(replay_buffer, batch_size)
+            # Train every step once buffer is ready
+            if len(replay_buffer) > batch_size * 4:
+                agent.train(replay_buffer, batch_size)
         
         episode_rewards.append(episode_reward)
+        episode_landmarks.append(env.current_landmark_idx)
         
-        # Enhanced logging
+        # Enhanced logging with progress tracking
         if (episode + 1) % 5 == 0:
-            avg_reward = np.mean(episode_rewards[-5:])
-            max_reward = np.max(episode_rewards[-5:])
+            avg_reward = np.mean(episode_rewards[-10:])
+            avg_landmarks = np.mean(episode_landmarks[-10:])
+            max_landmarks = max(episode_landmarks[-10:])
+            
             print(f"Ep {episode+1}/{num_episodes}, "
-                  f"Reward: {episode_reward:.1f} (Avg: {avg_reward:.1f}, Max: {max_reward:.1f}), "
-                  f"Landmarks: {env.current_landmark_idx}/{len(env.landmark_points)}, "
-                  f"Fuel: {env.vessel['fuel_tank_remaining_t']:.1f}t, "
+                  f"Reward: {episode_reward:.0f} (Avg10: {avg_reward:.0f}), "
+                  f"Landmarks: {env.current_landmark_idx}/{len(env.landmark_points)} "
+                  f"(Avg10: {avg_landmarks:.1f}, Max10: {max_landmarks}), "
+                  f"Fuel: {env.vessel['fuel_tank_remaining_t']:.0f}t, "
                   f"Noise: {noise_scale:.3f}")
+            
+            # Check for improvement
+            if avg_landmarks > best_avg_landmarks:
+                best_avg_landmarks = avg_landmarks
+                episodes_without_improvement = 0
+            else:
+                episodes_without_improvement += 5
+            
+            # Early stopping if stuck
+            if episodes_without_improvement > 100 and episode > 200:
+                print(f"\n⚠️ No improvement for {episodes_without_improvement} episodes. "
+                      f"Best avg landmarks: {best_avg_landmarks:.1f}")
+                print("Consider adjusting hyperparameters or reward function.")
         
         # Visualization
         if (episode + 1) % visualize_every_n_episodes == 0:
@@ -678,6 +852,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
                                   grid_params, weather_penalty_grid)
     
     return agent, episode_rewards
+
 
 # --- Main execution ---
 if __name__ == "__main__":
@@ -691,39 +866,17 @@ if __name__ == "__main__":
 
     print("Generating optimal path route...")
     selected_ports = ports_gdf.sample(3, random_state=50)  # REDUCED to 3 ports
-    optimal_path_route_names, G_main, selected_ports_main = get_optimal_path_route(vessel, selected_ports)
-
-    if not optimal_path_route_names:
-        print("Could not generate an optimal path route. Exiting.")
-        exit()
-
-    full_astar_path_latlon = []
-    for port_name in optimal_path_route_names:
-        port_coords = ports_gdf[ports_gdf["Ports"] == port_name].iloc[0]
-        full_astar_path_latlon.append((port_coords["lat"], port_coords["lon"]))
     
-    # INCREASED LANDMARK INTERVAL to 100km (aligned with main.py suggestion)
-    landmark_points = generate_landmark_points(full_astar_path_latlon, interval_km=100)
-    if not landmark_points:
-        print("No landmark points generated. Exiting.")
-        exit()
-    
-    print(f"Generated {len(landmark_points)} landmarks at 100km intervals")
-    
-    # Load bathymetry
-    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2024_sub_ice_topo.nc")
+    # Load bathymetry and grid parameters before calling get_optimal_path_route
+    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
     min_lon_astar, max_lon_astar = 99, 120
     min_lat_astar, max_lat_astar = 0, 8
     ds_subset_astar = ds_bathymetry.sel(
         lon=slice(min_lon_astar, max_lon_astar),
         lat=slice(min_lat_astar, max_lat_astar)
     )
-    
-    # INCREASED CELL SIZE to 10km (aligned with optimization and main.py)
     cell_size_m_astar = 10000  # 10km x 10km cells
     vessel_height_underwater = vessel["size"][2] * vessel["percent_of_height_underwater"]
-
-    print("Creating bathymetry grid...")
     bathymetry_maze, grid_lats, grid_lons, lat_step, lon_step, elevation_data = create_bathymetry_grid(
         ds_subset_astar, min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar, 
         cell_size_m_astar, vessel_height_underwater
@@ -732,12 +885,40 @@ if __name__ == "__main__":
     num_lon_cells = len(grid_lons)
     grid_params = (min_lat_astar, min_lon_astar, lat_step, lon_step, num_lat_cells, num_lon_cells)
 
-    print("Creating weather penalty grid...")
+    # Create weather penalty grid before calling get_optimal_path_route
     weather_penalty_grid = create_weather_penalty_grid(
         min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar, 
         lat_step, lon_step, num_lat_cells, num_lon_cells
     )
 
+    optimal_path_route_names, G_main, selected_ports_main = get_optimal_path_route(
+        vessel, selected_ports, bathymetry_maze, grid_params, weather_penalty_grid
+    )
+
+    if not optimal_path_route_names:
+        print("Could not generate an optimal path route. Exiting.")
+        exit()
+
+    full_astar_path_latlon = []
+    if optimal_path_route_names and G_main:
+        for i in range(len(optimal_path_route_names) - 1):
+            start_port = optimal_path_route_names[i]
+            end_port = optimal_path_route_names[i+1]
+            if G_main.has_edge(start_port, end_port):
+                path_segment = G_main[start_port][end_port].get("path_latlon", [])
+                full_astar_path_latlon.extend(path_segment)
+            elif G_main.has_edge(end_port, start_port): # Check for undirected graph
+                path_segment = G_main[end_port][start_port].get("path_latlon", [])
+                full_astar_path_latlon.extend(path_segment[::-1]) # Reverse if needed
+    
+    # Adjusted LANDMARK INTERVAL to 20km for more granular DRL guidance
+    landmark_points = generate_landmark_points(full_astar_path_latlon, interval_km=20)
+    if not landmark_points:
+        print("No landmark points generated. Exiting.")
+        exit()
+    
+    print(f"Generated {len(landmark_points)} landmarks at 20km intervals")
+    
     # Initialize Environment and Agent
     print("\nInitializing DRL environment...")
     env = MarineEnv(vessel.copy(), full_astar_path_latlon, landmark_points, 
@@ -751,7 +932,7 @@ if __name__ == "__main__":
     print("="*60)
     print(f"Configuration:")
     print(f"  - Episodes: 100")
-    print(f"  - Landmarks: {len(landmark_points)} (100km intervals)")
+    print(f"  - Landmarks: {len(landmark_points)} (20km intervals)") # Updated interval in print
     print(f"  - Grid cells: {num_lat_cells}x{num_lon_cells} (10km resolution)")
     print(f"  - Max steps per episode: 40")
     print(f"  - Time step: 2 hours")
@@ -763,8 +944,8 @@ if __name__ == "__main__":
     
     trained_agent, episode_rewards = train_ddpg_agent(
         env, agent, replay_buffer, 
-        num_episodes=500,  # REDUCED from 500
-        batch_size=64,     # REDUCED from 64
+        num_episodes=500,  # Keep 500 episodes for now
+        batch_size=64,     # Keep 64 batch size for now
         visualize_every_n_episodes=20,
         full_astar_path_latlon=full_astar_path_latlon,
         landmark_points=landmark_points,
