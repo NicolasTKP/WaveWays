@@ -23,7 +23,8 @@ from utils import (
     get_weather_penalty, calculate_vessel_range_km, simulate_vessel_route,
     get_optimal_path_route, haversine, generate_landmark_points,
     create_weather_penalty_grid, Node, astar, create_bathymetry_grid,
-    lat_lon_to_grid_coords, grid_coords_to_lat_lon
+    lat_lon_to_grid_coords, grid_coords_to_lat_lon,
+    generate_optimized_route_and_landmarks # Added this import
 )
 from d_star_lite import DStarLite, find_d_star_lite_route
 
@@ -856,69 +857,17 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
 
 # --- Main execution ---
 if __name__ == "__main__":
-    ports_df = pd.read_excel("data\\Ports\\ports.xlsx")
-    ports_df[["lat", "lon"]] = ports_df["Decimal"].str.split(",", expand=True).astype(float)
-    ports_gdf = gpd.GeoDataFrame(
-        ports_df,
-        geometry=gpd.points_from_xy(ports_df["lon"], ports_df["lat"]),
-        crs="EPSG:4326"
-    )
+    full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid = \
+        generate_optimized_route_and_landmarks(vessel, num_sample_ports=3, random_state=50, 
+                                               cell_size_m=10000, landmark_interval_km=20)
 
-    print("Generating optimal path route...")
-    selected_ports = ports_gdf.sample(3, random_state=50)  # REDUCED to 3 ports
-    
-    # Load bathymetry and grid parameters before calling get_optimal_path_route
-    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
-    min_lon_astar, max_lon_astar = 99, 120
-    min_lat_astar, max_lat_astar = 0, 8
-    ds_subset_astar = ds_bathymetry.sel(
-        lon=slice(min_lon_astar, max_lon_astar),
-        lat=slice(min_lat_astar, max_lat_astar)
-    )
-    cell_size_m_astar = 10000  # 10km x 10km cells
-    vessel_height_underwater = vessel["size"][2] * vessel["percent_of_height_underwater"]
-    bathymetry_maze, grid_lats, grid_lons, lat_step, lon_step, elevation_data = create_bathymetry_grid(
-        ds_subset_astar, min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar, 
-        cell_size_m_astar, vessel_height_underwater
-    )
-    num_lat_cells = len(grid_lats)
-    num_lon_cells = len(grid_lons)
-    grid_params = (min_lat_astar, min_lon_astar, lat_step, lon_step, num_lat_cells, num_lon_cells)
-
-    # Create weather penalty grid before calling get_optimal_path_route
-    weather_penalty_grid = create_weather_penalty_grid(
-        min_lon_astar, max_lon_astar, min_lat_astar, max_lat_astar, 
-        lat_step, lon_step, num_lat_cells, num_lon_cells
-    )
-
-    optimal_path_route_names, G_main, selected_ports_main = get_optimal_path_route(
-        vessel, selected_ports, bathymetry_maze, grid_params, weather_penalty_grid
-    )
-
-    if not optimal_path_route_names:
-        print("Could not generate an optimal path route. Exiting.")
-        exit()
-
-    full_astar_path_latlon = []
-    if optimal_path_route_names and G_main:
-        for i in range(len(optimal_path_route_names) - 1):
-            start_port = optimal_path_route_names[i]
-            end_port = optimal_path_route_names[i+1]
-            if G_main.has_edge(start_port, end_port):
-                path_segment = G_main[start_port][end_port].get("path_latlon", [])
-                full_astar_path_latlon.extend(path_segment)
-            elif G_main.has_edge(end_port, start_port): # Check for undirected graph
-                path_segment = G_main[end_port][start_port].get("path_latlon", [])
-                full_astar_path_latlon.extend(path_segment[::-1]) # Reverse if needed
-    
-    # Adjusted LANDMARK INTERVAL to 20km for more granular DRL guidance
-    landmark_points = generate_landmark_points(full_astar_path_latlon, interval_km=20)
-    if not landmark_points:
-        print("No landmark points generated. Exiting.")
+    if full_astar_path_latlon is None:
+        print("Failed to generate optimized route and landmarks. Exiting.")
         exit()
     
-    print(f"Generated {len(landmark_points)} landmarks at 20km intervals")
-    
+    # Extract grid dimensions from grid_params for logging
+    _, _, _, _, num_lat_cells, num_lon_cells = grid_params
+
     # Initialize Environment and Agent
     print("\nInitializing DRL environment...")
     env = MarineEnv(vessel.copy(), full_astar_path_latlon, landmark_points, 

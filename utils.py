@@ -827,3 +827,71 @@ def find_closest_sea_node(land_grid_coords, bathymetry_maze):
     # Should ideally not happen if there's any sea around, but as a fallback
     print(f"Warning: No sea node found around {land_grid_coords}. This might indicate an isolated landmass or error.")
     return land_grid_coords # Return original if no sea found (will likely lead to A* failure)
+
+def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, random_state=50, 
+                                           min_lon_region=99, max_lon_region=120, 
+                                           min_lat_region=0, max_lat_region=8, 
+                                           cell_size_m=10000, landmark_interval_km=20):
+    """
+    High-level function to generate an optimized route using TSP and A*,
+    and then extract high-value landmark points.
+    """
+    ports_df = pd.read_excel("data\\Ports\\ports.xlsx")
+    ports_df[["lat", "lon"]] = ports_df["Decimal"].str.split(",", expand=True).astype(float)
+    ports_gdf = gpd.GeoDataFrame(
+        ports_df,
+        geometry=gpd.points_from_xy(ports_df["lon"], ports_df["lat"]),
+        crs="EPSG:4326"
+    )
+
+    print("Generating optimal path route...")
+    selected_ports = ports_gdf.sample(num_sample_ports, random_state=random_state)
+    
+    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2024_sub_ice_topo.nc")
+    ds_subset_astar = ds_bathymetry.sel(
+        lon=slice(min_lon_region, max_lon_region),
+        lat=slice(min_lat_region, max_lat_region)
+    )
+    
+    vessel_height_underwater_calc = vessel_data["size"][2] * vessel_data["percent_of_height_underwater"]
+    bathymetry_maze, grid_lats, grid_lons, lat_step, lon_step, elevation_data = create_bathymetry_grid(
+        ds_subset_astar, min_lon_region, max_lon_region, min_lat_region, max_lat_region, 
+        cell_size_m, vessel_height_underwater_calc
+    )
+    num_lat_cells = len(grid_lats)
+    num_lon_cells = len(grid_lons)
+    grid_params = (min_lat_region, min_lon_region, lat_step, lon_step, num_lat_cells, num_lon_cells)
+
+    weather_penalty_grid = create_weather_penalty_grid(
+        min_lon_region, max_lon_region, min_lat_region, max_lat_region, 
+        lat_step, lon_step, num_lat_cells, num_lon_cells
+    )
+
+    optimal_path_route_names, G_main, selected_ports_main = get_optimal_path_route(
+        vessel_data, selected_ports, bathymetry_maze, grid_params, weather_penalty_grid
+    )
+
+    if not optimal_path_route_names:
+        print("Could not generate an optimal path route. Exiting.")
+        return None, None, None, None, None
+
+    full_astar_path_latlon = []
+    if optimal_path_route_names and G_main:
+        for i in range(len(optimal_path_route_names) - 1):
+            start_port = optimal_path_route_names[i]
+            end_port = optimal_path_route_names[i+1]
+            if G_main.has_edge(start_port, end_port):
+                path_segment = G_main[start_port][end_port].get("path_latlon", [])
+                full_astar_path_latlon.extend(path_segment)
+            elif G_main.has_edge(end_port, start_port):
+                path_segment = G_main[end_port][start_port].get("path_latlon", [])
+                full_astar_path_latlon.extend(path_segment[::-1])
+    
+    landmark_points = generate_landmark_points(full_astar_path_latlon, interval_km=landmark_interval_km)
+    if not landmark_points:
+        print("No landmark points generated. Exiting.")
+        return None, None, None, None, None
+    
+    print(f"Generated {len(landmark_points)} landmarks at {landmark_interval_km}km intervals")
+
+    return full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid
