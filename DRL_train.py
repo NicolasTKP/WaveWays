@@ -235,7 +235,7 @@ class MarineEnv:
         
         if progress > 0:
             # Strong reward for progress, scaled by distance
-            base_reward = progress * 50.0  # REDUCED from 200
+            base_reward = progress * 80.0  # REDUCED from 200
             
             # Efficiency bonus (straight path better than zigzag)
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
@@ -246,7 +246,7 @@ class MarineEnv:
             
         else:
             # Penalty for regression, but not too severe
-            regression_penalty = abs(progress) * 60.0  # REDUCED from 300
+            regression_penalty = abs(progress) * 80.0  # REDUCED from 300
             reward -= regression_penalty
         
         # ============================================================================
@@ -255,11 +255,11 @@ class MarineEnv:
         # Scale reward based on how close we are to target
         # Closer = higher urgency to reach it
         if new_distance < 50:
-            proximity_bonus = (50 - new_distance) * 2.0
+            proximity_bonus = (50 - new_distance) * 2.5
             reward += proximity_bonus
         
         # General distance penalty (encourages getting closer)
-        distance_penalty = new_distance * 0.1  # Small continuous penalty
+        distance_penalty = new_distance * 0.2  # Small continuous penalty
         reward -= distance_penalty
         
         # ============================================================================
@@ -280,9 +280,14 @@ class MarineEnv:
         # 4. LANDMARK COMPLETION (HUGE BONUS)
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
-            landmark_bonus = 500.0  # REDUCED from 1000 to balance with other rewards
-            reward += landmark_bonus
-            print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points")
+            # Only give bonus if this landmark has not been visited before for a bonus
+            if self.current_landmark_idx not in self.bonus_received_landmarks:
+                landmark_bonus = 1000.0  # REDUCED from 1000 to balance with other rewards
+                reward += landmark_bonus
+                self.bonus_received_landmarks.add(self.current_landmark_idx) # Mark as bonus received
+                print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
+            else:
+                print(f"  🎯 LANDMARK REACHED! (already received bonus)")
         
         # ============================================================================
         # 5. MOVEMENT REQUIREMENT (PREVENT STAYING STILL)
@@ -312,7 +317,7 @@ class MarineEnv:
         # Collision
         if obstacle_info and self._check_collision_with_obstacle(
             self.current_position_latlon, obstacle_info):
-            reward -= 200.0  # REDUCED from 500
+            reward -= 2000.0  # REDUCED from 500
             print(f"  💥 COLLISION: -200")
         
         # Rerouting
@@ -321,7 +326,7 @@ class MarineEnv:
         
         # Revisiting a landmark
         if revisited_landmark:
-            revisit_penalty = 300.0 # Significant penalty for going backwards
+            revisit_penalty = 500.0 # Significant penalty for going backwards
             reward -= revisit_penalty
             print(f"  ↩️ REVISITED LANDMARK: -{revisit_penalty}")
 
@@ -363,7 +368,7 @@ class MarineEnv:
                 
                 # If vessel stayed within 10km box for 8 steps (16-24 hours)
                 if lat_range_km < 10 and lon_range_km < 10:
-                    circular_penalty = 200.0
+                    circular_penalty = 2000.0
                     reward -= circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -395,16 +400,16 @@ class MarineEnv:
         # ============================================================================
         # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
-        reward = np.clip(reward, -1000, 1000)
+        reward = np.clip(reward, -5000, 2000)
         
         return reward
 
     def __init__(self, initial_vessel_state, full_astar_path_latlon, landmark_points, 
-             bathymetry_data, grid_params, weather_penalty_grid):
+             bathymetry_maze, grid_params, weather_penalty_grid):
         self.vessel = initial_vessel_state
         self.full_astar_path_latlon = full_astar_path_latlon
         self.landmark_points = landmark_points
-        self.bathymetry_data = bathymetry_data
+        self.bathymetry_maze = bathymetry_maze
         self.grid_params = grid_params
         self.weather_penalty_grid = weather_penalty_grid
 
@@ -537,6 +542,8 @@ class MarineEnv:
         self.heading_history = [self.current_heading_deg]
         self.visited_landmarks.clear() # Clear visited landmarks on reset
         self.visited_landmarks.add(0) # Add the starting landmark (index 0)
+        self.bonus_received_landmarks = set() # Initialize set to track landmarks for which bonus has been received
+        self.bonus_received_landmarks.add(0) # Bonus for starting landmark is implicitly received
 
         return self._get_state()
 
@@ -627,6 +634,28 @@ class MarineEnv:
 
         new_position_latlon = (new_lat, new_lon)
 
+        # Check for land collision (bathymetry depth > 0)
+        is_on_land = False
+        grid_lat, grid_lon = lat_lon_to_grid_coords(new_lat, new_lon, *self.grid_params)
+        
+        # Ensure grid coordinates are within bounds before accessing bathymetry_maze
+        if 0 <= int(grid_lat) < self.num_lat_cells and 0 <= int(grid_lon) < self.num_lon_cells:
+            # Correct indexing for a list of lists (2D array)
+            if self.bathymetry_maze[int(grid_lat)][int(grid_lon)] > 0: # Assuming >0 means land
+                is_on_land = True
+                print(f"  ⚠️ LAND COLLISION at {new_position_latlon}! Depth: {self.bathymetry_maze[int(grid_lat)][int(grid_lon)]}")
+                # Revert position and apply penalty
+                new_position_latlon = prev_position
+                reward = -1000.0 # Severe penalty for land collision
+                done = True # End episode on land collision
+        else:
+            # If outside grid bounds, treat as land or invalid area
+            is_on_land = True
+            print(f"  ⚠️ OUT OF BOUNDS at {new_position_latlon}! Treating as land.")
+            new_position_latlon = prev_position
+            reward = -1000.0 # Severe penalty for out of bounds
+            done = True # End episode on out of bounds
+        
         # OBSTACLE HANDLING (keep your existing code)
         rerouted_path_latlon = None
         obstacle_info = None
@@ -764,7 +793,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
     episode_landmarks = []  # Track progress
     
     # Curriculum learning
-    env.time_step_hours = 3.0
+    env.time_step_hours = 3.5
     
     # IMPROVED: Track best performance for early stopping
     best_avg_landmarks = 0
@@ -776,13 +805,13 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         done = False
         step_count = 0
         
-        max_steps = 60  # INCREASED from 50
+        max_steps = 80  # INCREASED from 50
         
         # Curriculum: Adjust difficulty
         if episode > 100:
-            env.time_step_hours = 2.5
+            env.time_step_hours = 3.0
         if episode > 200:
-            env.time_step_hours = 2.0
+            env.time_step_hours = 2.5
         
         while not done and step_count < max_steps:
             action = agent.select_action(state)
@@ -859,7 +888,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
 if __name__ == "__main__":
     full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid = \
         generate_optimized_route_and_landmarks(vessel, num_sample_ports=3, random_state=50, 
-                                               cell_size_m=10000, landmark_interval_km=20)
+                                               cell_size_m=10000, landmark_interval_km=120)
 
     if full_astar_path_latlon is None:
         print("Failed to generate optimized route and landmarks. Exiting.")
@@ -881,7 +910,7 @@ if __name__ == "__main__":
     print("="*60)
     print(f"Configuration:")
     print(f"  - Episodes: 100")
-    print(f"  - Landmarks: {len(landmark_points)} (20km intervals)") # Updated interval in print
+    print(f"  - Landmarks: {len(landmark_points)} (60km intervals)") # Updated interval in print
     print(f"  - Grid cells: {num_lat_cells}x{num_lon_cells} (10km resolution)")
     print(f"  - Max steps per episode: 40")
     print(f"  - Time step: 2 hours")

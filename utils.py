@@ -108,7 +108,7 @@ def get_weather_for_point(lat, lon):
             location_code = location_codes.get(location_name)
             if location_code:
                 url = f"https://www.met.gov.my/en/forecast/marine/shipping/{location_code}/"
-                print(f"Fetching weather for {location_name} at ({lat}, {lon})...")
+                # Removed verbose print statement
                 weather = scrape_weather_data(url)
                 
                 result = (weather, location_name)
@@ -472,18 +472,18 @@ def get_optimal_path_route(vessel_data, selected_ports, bathymetry_maze, grid_pa
 
         # Adjust start/end grid if they are on land
         if bathymetry_maze[start_grid[0]][start_grid[1]] != 0:
-            print(f"  Warning: Start port {start_port_name} is on land. Finding closest sea node...")
+            # Removed verbose print statement
             start_grid = find_closest_sea_node(start_grid, bathymetry_maze)
             if bathymetry_maze[start_grid[0]][start_grid[1]] != 0:
                 print(f"  Error: Could not find a valid sea node for start port {start_port_name}. A* will likely fail.")
 
         if bathymetry_maze[end_grid[0]][end_grid[1]] != 0:
-            print(f"  Warning: End port {end_port_name} is on land. Finding closest sea node...")
+            # Removed verbose print statement
             end_grid = find_closest_sea_node(end_grid, bathymetry_maze)
             if bathymetry_maze[end_grid[0]][end_grid[1]] != 0:
                 print(f"  Error: Could not find a valid sea node for end port {end_port_name}. A* will likely fail.")
 
-        print(f"  Generating A* path from {start_port_name} to {end_port_name} (adjusted grid: {start_grid} to {end_grid})...")
+        # Removed verbose print statement
         path_grid = astar(bathymetry_maze, start_grid, end_grid, weather_penalty_grid)
         
         path_latlon_segment = []
@@ -495,7 +495,7 @@ def get_optimal_path_route(vessel_data, selected_ports, bathymetry_maze, grid_pa
             path_distance_km = 0.0
             for k in range(len(path_latlon_segment) - 1):
                 path_distance_km += geodesic(path_latlon_segment[k], path_latlon_segment[k+1]).km
-            print(f"  A* path found between {start_port_name} and {end_port_name}. Distance: {path_distance_km:.1f} km")
+            # Removed verbose print statement
             full_astar_path_latlon.extend(path_latlon_segment)
         else:
             print(f"  No A* path found between {start_port_name} and {end_port_name} (land/weather). Assigning high penalty.")
@@ -504,19 +504,25 @@ def get_optimal_path_route(vessel_data, selected_ports, bathymetry_maze, grid_pa
             # The DRL agent will then have to deal with this high penalty.
             
         # Add edge to G_final_route with A* path details
-        # For environmental conditions, we can re-interpolate points along the A* path
-        # or use the original straight-line interpolation for weather data if A* path is too complex
-        
-        # For simplicity, let's re-evaluate conditions along the A* path if found,
+        # For environmental conditions, we can re-evaluate conditions along the A* path if found,
         # otherwise use a dummy for unreachable segments.
         
-        segment_points_for_conditions = path_latlon_segment if path_latlon_segment else interpolate_points(
-            start_lat, start_lon, end_lat, end_lon, n=5
-        )
+        # OPTIMIZATION: Fetch weather data only for a few strategic points per segment
+        # Instead of all interpolated points, use start, end, and optionally a midpoint
         
+        points_for_weather_check = []
+        if path_latlon_segment:
+            points_for_weather_check.append(path_latlon_segment[0])
+            if len(path_latlon_segment) > 2:
+                points_for_weather_check.append(path_latlon_segment[len(path_latlon_segment) // 2])
+            if len(path_latlon_segment) > 1:
+                points_for_weather_check.append(path_latlon_segment[-1])
+        else: # Fallback to straight-line if no A* path
+            points_for_weather_check = interpolate_points(start_lat, start_lon, end_lat, end_lon, n=3) # Reduced to 3 points
+
         point_conditions = []
         all_weather_data_for_edge = []
-        for (lat, lon) in segment_points_for_conditions:
+        for (lat, lon) in points_for_weather_check:
             try:
                 cond = get_wave_wind(lat, lon, time="latest")
             except Exception as e:
