@@ -170,7 +170,12 @@ class MarineEnv:
     def _get_state(self):
         """Modified to return normalized state"""
         current_lat, current_lon = self.current_position_latlon
-        target_landmark_lat, target_landmark_lon = self.landmark_points[self.current_landmark_idx]
+        
+        # Handle case where all landmarks are visited
+        if self.current_landmark_idx >= len(self.landmark_points):
+            target_landmark_lat, target_landmark_lon = self.landmark_points[-1] # Target the last landmark
+        else:
+            target_landmark_lat, target_landmark_lon = self.landmark_points[self.current_landmark_idx]
 
         # Get cached weather data (keep existing code)
         cache_key = (round(current_lat, 1), round(current_lon, 1))
@@ -217,7 +222,28 @@ class MarineEnv:
         3. Earlier detection of stuck behavior
         4. Reward shaping to guide agent even when far from target
         """
-        reward = 0.0
+        reward_breakdown = {
+            'progress_reward': 0.0,
+            'regression_penalty': 0.0,
+            'proximity_bonus': 0.0,
+            'distance_penalty': 0.0,
+            'heading_reward': 0.0,
+            'landmark_bonus': 0.0,
+            'stuck_penalty': 0.0,
+            'fuel_cost_penalty': 0.0,
+            'emissions_penalty': 0.0,
+            'fuel_exhaustion_penalty': 0.0,
+            'collision_penalty': 0.0,
+            'rerouting_penalty': 0.0,
+            'revisit_landmark_penalty': 0.0,
+            'speed_efficiency_penalty': 0.0,
+            'too_slow_penalty': 0.0,
+            'circular_motion_penalty': 0.0,
+            'excessive_turning_penalty': 0.0,
+            'land_collision_penalty': 0.0, # Added for land collision
+            'out_of_bounds_penalty': 0.0, # Added for out of bounds
+            'total_reward': 0.0
+        }
         
         # Extract info
         prev_distance = reward_info['prev_distance']
@@ -227,40 +253,33 @@ class MarineEnv:
         obstacle_info = reward_info['obstacle_info']
         distance_travelled = reward_info['distance_travelled']
         revisited_landmark = reward_info['revisited_landmark'] # Extract the new flag
+        land_collision_occurred = reward_info.get('land_collision_occurred', False)
+        out_of_bounds_occurred = reward_info.get('out_of_bounds_occurred', False)
         
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
         # ============================================================================
         progress = prev_distance - new_distance  # Positive = moving closer
         
-        if progress > 0:
-            # Strong reward for progress, scaled by distance
-            base_reward = progress * 80.0  # REDUCED from 200
-            
-            # Efficiency bonus (straight path better than zigzag)
+        if progress > 1:
+            base_reward = progress * 60.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
-            if efficiency > 0.7:
+            if efficiency > 0.8:
                 base_reward *= 1.3
-            
-            reward += base_reward
-            
+            reward_breakdown['progress_reward'] = base_reward
         else:
-            # Penalty for regression, but not too severe
-            regression_penalty = abs(progress) * 80.0  # REDUCED from 300
-            reward -= regression_penalty
+            regression_penalty = abs(progress) * 60.0
+            reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        # Scale reward based on how close we are to target
-        # Closer = higher urgency to reach it
         if new_distance < 50:
             proximity_bonus = (50 - new_distance) * 2.5
-            reward += proximity_bonus
+            reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        # General distance penalty (encourages getting closer)
-        distance_penalty = new_distance * 0.2  # Small continuous penalty
-        reward -= distance_penalty
+        distance_penalty = new_distance * 0.2
+        reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
         # 3. HEADING ALIGNMENT (MODERATE WEIGHT)
@@ -272,19 +291,17 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            # Reward good heading
-            heading_reward = (180 - heading_diff) / 180.0 * 20  # 0-20 points
-            reward += heading_reward
+            heading_reward = (180 - heading_diff) / 180.0 * 20
+            reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
         # 4. LANDMARK COMPLETION (HUGE BONUS)
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
-            # Only give bonus if this landmark has not been visited before for a bonus
             if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 1000.0  # REDUCED from 1000 to balance with other rewards
-                reward += landmark_bonus
-                self.bonus_received_landmarks.add(self.current_landmark_idx) # Mark as bonus received
+                landmark_bonus = 2000.0
+                reward_breakdown['landmark_bonus'] = landmark_bonus
+                self.bonus_received_landmarks.add(self.current_landmark_idx)
                 print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
             else:
                 print(f"  🎯 LANDMARK REACHED! (already received bonus)")
@@ -292,90 +309,86 @@ class MarineEnv:
         # ============================================================================
         # 5. MOVEMENT REQUIREMENT (PREVENT STAYING STILL)
         # ============================================================================
-        if distance_travelled < 3.0:  # Less than 3km in 2-3 hours is suspicious
+        if distance_travelled < 3.0:
             stuck_penalty = (3.0 - distance_travelled) * 50.0
-            reward -= stuck_penalty
+            reward_breakdown['stuck_penalty'] = -stuck_penalty
             if distance_travelled < 1.0:
                 print(f"  🐌 BARELY MOVING: -{stuck_penalty:.1f} (only {distance_travelled:.1f}km)")
         
         # ============================================================================
         # 6. OPERATIONAL COSTS (MINIMAL)
         # ============================================================================
-        fuel_penalty = self.total_fuel_consumed * 0.002  # GREATLY REDUCED
-        emissions_penalty = self.total_emissions * 0.005  # GREATLY REDUCED
-        reward -= (fuel_penalty + emissions_penalty)
+        fuel_cost_penalty = self.total_fuel_consumed * 0.002
+        emissions_penalty = self.total_emissions * 0.005
+        reward_breakdown['fuel_cost_penalty'] = -fuel_cost_penalty
+        reward_breakdown['emissions_penalty'] = -emissions_penalty
         
         # ============================================================================
         # 7. FAILURE PENALTIES (MODERATE - NOT OVERWHELMING)
         # ============================================================================
         
-        # Fuel exhaustion
         if self.vessel["fuel_tank_remaining_t"] <= 0:
-            reward -= 500.0  # REDUCED from 2000
+            reward_breakdown['fuel_exhaustion_penalty'] = -500.0
             print(f"  ⛽ FUEL EXHAUSTED: -500")
         
-        # Collision
         if obstacle_info and self._check_collision_with_obstacle(
             self.current_position_latlon, obstacle_info):
-            reward -= 2000.0  # REDUCED from 500
+            reward_breakdown['collision_penalty'] = -2000.0
             print(f"  💥 COLLISION: -200")
         
-        # Rerouting
         if rerouted_path:
-            reward -= 50.0  # REDUCED from 100
+            reward_breakdown['rerouting_penalty'] = -50.0
         
-        # Revisiting a landmark
         if revisited_landmark:
-            revisit_penalty = 500.0 # Significant penalty for going backwards
-            reward -= revisit_penalty
+            revisit_penalty = 500.0
+            reward_breakdown['revisit_landmark_penalty'] = -revisit_penalty
             print(f"  ↩️ REVISITED LANDMARK: -{revisit_penalty}")
+
+        # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
+        if land_collision_occurred:
+            reward_breakdown['land_collision_penalty'] = -2000.0 # Consistent with step()
+        if out_of_bounds_occurred:
+            reward_breakdown['out_of_bounds_penalty'] = -1000.0 # Consistent with step()
 
         # ============================================================================
         # 8. SPEED EFFICIENCY (SMALL PENALTY)
         # ============================================================================
         optimal_speed = self.max_speed_knots * 0.75
         speed_diff = abs(self.current_speed_knots - optimal_speed)
-        speed_penalty = speed_diff * 0.5  # REDUCED from 2
-        reward -= speed_penalty
+        speed_penalty = speed_diff * 0.5
+        reward_breakdown['speed_efficiency_penalty'] = -speed_penalty
         
-        # Too slow penalty
         if self.current_speed_knots < self.max_speed_knots * 0.4:
-            reward -= 20.0  # REDUCED from 50
+            reward_breakdown['too_slow_penalty'] = -20.0
         
         # ============================================================================
         # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
         # ============================================================================
         
-        # Track recent positions
         if not hasattr(self, 'position_history'):
             self.position_history = []
         
         self.position_history.append(self.current_position_latlon)
-        if len(self.position_history) > 8:  # Check last 8 positions
+        if len(self.position_history) > 8:
             self.position_history.pop(0)
             
             if len(self.position_history) == 8:
-                # Calculate bounding box of recent positions
                 lats = [p[0] for p in self.position_history]
                 lons = [p[1] for p in self.position_history]
                 
                 lat_range = max(lats) - min(lats)
                 lon_range = max(lons) - min(lons)
                 
-                # Convert to km (rough approximation)
                 lat_range_km = lat_range * 111.0
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
-                # If vessel stayed within 10km box for 8 steps (16-24 hours)
                 if lat_range_km < 10 and lon_range_km < 10:
-                    circular_penalty = 2000.0
-                    reward -= circular_penalty
+                    circular_penalty = 3000.0
+                    reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
-                    # Clear history to allow recovery
                     self.position_history = [self.current_position_latlon]
         
-        # Heading change detection (for tight spirals)
         if not hasattr(self, 'heading_history'):
             self.heading_history = []
         
@@ -391,18 +404,18 @@ class MarineEnv:
                         diff = 360 - diff
                     total_change += diff
                 
-                # If turning more than 120 degrees total over 4 steps
                 if total_change > 120:
-                    zigzag_penalty = 80.0  # REDUCED from 150
-                    reward -= zigzag_penalty
+                    zigzag_penalty = 80.0
+                    reward_breakdown['excessive_turning_penalty'] = -zigzag_penalty
                     print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
         
         # ============================================================================
         # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
-        reward = np.clip(reward, -5000, 2000)
+        total_reward = sum(reward_breakdown.values())
+        reward_breakdown['total_reward'] = np.clip(total_reward, -5000, 5000)
         
-        return reward
+        return reward_breakdown
 
     def __init__(self, initial_vessel_state, full_astar_path_latlon, landmark_points, 
              bathymetry_maze, grid_params, weather_penalty_grid):
@@ -431,6 +444,7 @@ class MarineEnv:
         self.total_emissions = 0.0
         self.total_eta_hours = 0.0
         self.drl_path_segment = []
+        self.full_episode_drl_path = [] # Added for full episode path tracking
         self.rerouted_paths_history = []
         self.visited_landmarks = set() # Initialize set to store visited landmark indices
 
@@ -533,6 +547,7 @@ class MarineEnv:
         self.total_eta_hours = 0.0
         self.vessel["fuel_tank_remaining_t"] = self.vessel["fuel_tank_capacity_t"]
         self.drl_path_segment = [self.current_position_latlon]
+        self.full_episode_drl_path = [self.current_position_latlon] # Initialize full path
         
         # Initialize ALL tracking lists
         self.recent_headings = [self.current_heading_deg]
@@ -544,6 +559,8 @@ class MarineEnv:
         self.visited_landmarks.add(0) # Add the starting landmark (index 0)
         self.bonus_received_landmarks = set() # Initialize set to track landmarks for which bonus has been received
         self.bonus_received_landmarks.add(0) # Bonus for starting landmark is implicitly received
+
+        print(f"DEBUG: Resetting episode. Starting position: {self.current_position_latlon}, Target landmark index: {self.current_landmark_idx}")
 
         return self._get_state()
 
@@ -643,17 +660,18 @@ class MarineEnv:
             # Correct indexing for a list of lists (2D array)
             if self.bathymetry_maze[int(grid_lat)][int(grid_lon)] > 0: # Assuming >0 means land
                 is_on_land = True
-                print(f"  ⚠️ LAND COLLISION at {new_position_latlon}! Depth: {self.bathymetry_maze[int(grid_lat)][int(grid_lon)]}")
+                penalty = -3000
+                print(f"  ⚠️ LAND COLLISION at {new_position_latlon}! Depth: {self.bathymetry_maze[int(grid_lat)][int(grid_lon)]} Rewards set to {penalty}")
+                reward = penalty
                 # Revert position and apply penalty
                 new_position_latlon = prev_position
-                reward = -1000.0 # Severe penalty for land collision
                 done = True # End episode on land collision
         else:
             # If outside grid bounds, treat as land or invalid area
             is_on_land = True
             print(f"  ⚠️ OUT OF BOUNDS at {new_position_latlon}! Treating as land.")
             new_position_latlon = prev_position
-            reward = -1000.0 # Severe penalty for out of bounds
+            # reward = -1000.0 # Severe penalty for out of bounds - now handled in _calculate_reward
             done = True # End episode on out of bounds
         
         # OBSTACLE HANDLING (keep your existing code)
@@ -669,11 +687,12 @@ class MarineEnv:
                 
                 if obstacle_size_km > 3.0:
                     print(f"Large obstacle ({obstacle_size_km:.2f} km) - Using D* Lite rerouting")
-                    # ... your D* Lite code ...
+        # ... your D* Lite code ...
                     pass
 
         self.current_position_latlon = new_position_latlon
         self.drl_path_segment.append(new_position_latlon)
+        self.full_episode_drl_path.append(new_position_latlon) # Append to full episode path
         self.total_eta_hours += self.time_step_hours
 
         # Fuel consumption
@@ -724,17 +743,23 @@ class MarineEnv:
             'rerouted_path': rerouted_path_latlon,
             'obstacle_info': obstacle_info,
             'distance_travelled': distance_travelled_km,
-            'revisited_landmark': revisited_landmark # Add this flag
+            'revisited_landmark': revisited_landmark, # Add this flag
+            'land_collision_occurred': is_on_land, # Pass land collision status
+            'out_of_bounds_occurred': (not (0 <= int(grid_lat) < self.num_lat_cells and 0 <= int(grid_lon) < self.num_lon_cells)) # Pass out of bounds status
         }
         
-        reward = self._calculate_reward(reward_info)
+        reward_breakdown = self._calculate_reward(reward_info)
+        total_reward = reward_breakdown['total_reward']
 
         next_state = self._get_state()
         
         if rerouted_path_latlon:
             self.rerouted_paths_history.append(rerouted_path_latlon)
 
-        return next_state, reward, done, {"rerouted_path": rerouted_path_latlon}
+        # Pass the full breakdown in the info dictionary
+        info = {"rerouted_path": rerouted_path_latlon, "reward_breakdown": reward_breakdown}
+
+        return next_state, total_reward, done, info
     
  
 # Additional fixes to add to the MarineEnv class:
@@ -765,9 +790,16 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     ax.scatter(landmark_lons, landmark_lats, color='cyan', s=80, marker='o', 
               edgecolor='black', label="Landmarks", zorder=5)
 
+    # Highlight the first landmark
+    if landmark_points:
+        first_landmark_lon = landmark_points[0][1]
+        first_landmark_lat = landmark_points[0][0]
+        ax.scatter(first_landmark_lon, first_landmark_lat, color='yellow', s=150, 
+                   marker='*', edgecolor='red', label="Start Landmark", zorder=7)
+    
     # Plot DRL path
-    drl_lons = [p[1] for p in env.drl_path_segment]
-    drl_lats = [p[0] for p in env.drl_path_segment]
+    drl_lons = [p[1] for p in env.full_episode_drl_path] # Use full_episode_drl_path for plotting
+    drl_lats = [p[0] for p in env.full_episode_drl_path] # Use full_episode_drl_path for plotting
     ax.plot(drl_lons, drl_lats, 'darkgreen', linewidth=2, label="DRL Path")
     ax.scatter(drl_lons[-1], drl_lats[-1], color='darkgreen', s=120, 
               marker='P', label="Current Position", zorder=6)
@@ -793,7 +825,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
     episode_landmarks = []  # Track progress
     
     # Curriculum learning
-    env.time_step_hours = 3.5
+    env.time_step_hours = 3
     
     # IMPROVED: Track best performance for early stopping
     best_avg_landmarks = 0
@@ -805,13 +837,25 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         done = False
         step_count = 0
         
+        # Initialize episode reward breakdown
+        episode_reward_breakdown = {
+            'progress_reward': 0.0, 'regression_penalty': 0.0, 'proximity_bonus': 0.0,
+            'distance_penalty': 0.0, 'heading_reward': 0.0, 'landmark_bonus': 0.0,
+            'stuck_penalty': 0.0, 'fuel_cost_penalty': 0.0, 'emissions_penalty': 0.0,
+            'fuel_exhaustion_penalty': 0.0, 'collision_penalty': 0.0, 'rerouting_penalty': 0.0,
+            'revisit_landmark_penalty': 0.0, 'speed_efficiency_penalty': 0.0,
+            'too_slow_penalty': 0.0, 'circular_motion_penalty': 0.0,
+            'excessive_turning_penalty': 0.0, 'land_collision_penalty': 0.0,
+            'out_of_bounds_penalty': 0.0, 'total_reward': 0.0
+        }
+
         max_steps = 80  # INCREASED from 50
         
         # Curriculum: Adjust difficulty
         if episode > 100:
-            env.time_step_hours = 3.0
-        if episode > 200:
             env.time_step_hours = 2.5
+        if episode > 200:
+            env.time_step_hours = 2
         
         while not done and step_count < max_steps:
             action = agent.select_action(state)
@@ -833,13 +877,18 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             
             next_state, reward, done, info = env.step(action, obstacle_present)
             
+            # Accumulate reward breakdown
+            for key, value in info['reward_breakdown'].items():
+                episode_reward_breakdown[key] += value
+            
             # CLIP reward before storing (prevent extreme values in buffer)
-            reward = np.clip(reward, -1000, 1000)
+            # The 'reward' returned by env.step is already clipped total_reward
+            reward = np.clip(reward, -1000, 1000) 
             
             replay_buffer.push(state, action, next_state, reward, done)
             
             state = next_state
-            episode_reward += reward
+            episode_reward += reward # This is the total reward for the step
             step_count += 1
             
             # Train every step once buffer is ready
@@ -849,6 +898,14 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         episode_rewards.append(episode_reward)
         episode_landmarks.append(env.current_landmark_idx)
         
+        # Print detailed reward breakdown at the end of the episode
+        print(f"\n--- Episode {episode+1} Reward Breakdown ---")
+        for key, value in episode_reward_breakdown.items():
+            if key != 'total_reward':
+                print(f"  {key.replace('_', ' ').title()}: {value:.2f}")
+        print(f"  Total Episode Reward: {episode_reward_breakdown['total_reward']:.2f}")
+        print("------------------------------------")
+
         # Enhanced logging with progress tracking
         if (episode + 1) % 5 == 0:
             avg_reward = np.mean(episode_rewards[-10:])
@@ -922,7 +979,7 @@ if __name__ == "__main__":
     
     trained_agent, episode_rewards = train_ddpg_agent(
         env, agent, replay_buffer, 
-        num_episodes=500,  # Keep 500 episodes for now
+        num_episodes=1000,  # Keep 500 episodes for now
         batch_size=64,     # Keep 64 batch size for now
         visualize_every_n_episodes=20,
         full_astar_path_latlon=full_astar_path_latlon,
