@@ -212,7 +212,7 @@ class MarineEnv:
         # NORMALIZE before returning
         return self._normalize_state(state)
     
-    def _calculate_reward(self, reward_info):
+    def _calculate_reward(self, reward_info, episode): # Added episode parameter
         """
         REDESIGNED REWARD SYSTEM v2 - Balanced and scaled properly
         
@@ -262,20 +262,20 @@ class MarineEnv:
         progress = prev_distance - new_distance  # Positive = moving closer
         
         if progress > 1:
-            base_reward = progress * 10.0
+            base_reward = progress * 20.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
             reward_breakdown['progress_reward'] = base_reward
         else:
-            regression_penalty = abs(progress) * 10.0
+            regression_penalty = abs(progress) * 25.0
             reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         if new_distance < 50:
-            proximity_bonus = (50 - new_distance) * 5.5
+            proximity_bonus = (50 - new_distance) * 5.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         distance_penalty = new_distance * 0.2
@@ -299,7 +299,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 5000.0
+                landmark_bonus = 10000.0
                 reward_breakdown['landmark_bonus'] = landmark_bonus
                 self.bonus_received_landmarks.add(self.current_landmark_idx)
                 print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
@@ -346,7 +346,11 @@ class MarineEnv:
 
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
-            reward_breakdown['land_collision_penalty'] = -5000.0 # Consistent with step()
+            # Scale land collision penalty with episode number
+            base_penalty = 2500.0
+            scaled_penalty = base_penalty * max(1, episode / 150) # Increase penalty by 1% per episode
+            reward_breakdown['land_collision_penalty'] = -scaled_penalty
+            print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
         if out_of_bounds_occurred:
             reward_breakdown['out_of_bounds_penalty'] = -5000.0 # Consistent with step()
 
@@ -359,7 +363,7 @@ class MarineEnv:
         reward_breakdown['speed_efficiency_penalty'] = -speed_penalty
         
         if self.current_speed_knots < self.max_speed_knots * 0.4:
-            reward_breakdown['too_slow_penalty'] = -15.0
+            reward_breakdown['too_slow_penalty'] = -10.0
         
         # ============================================================================
         # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
@@ -404,7 +408,7 @@ class MarineEnv:
                         diff = 360 - diff
                     total_change += diff
                 
-                if total_change > 70:
+                if total_change > 100:
                     zigzag_penalty = 200.0
                     reward_breakdown['excessive_turning_penalty'] = -zigzag_penalty
                     print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
@@ -614,7 +618,7 @@ class MarineEnv:
         return (lat_diff < obstacle['size_lat'] / 2 and 
                 lon_diff < obstacle['size_lon'] / 2)
 
-    def step(self, action, obstacle_present=False):
+    def step(self, action, obstacle_present=False, episode=0): # Added episode parameter
         """Enhanced step function with proper state tracking"""
         # CRITICAL: Store previous state BEFORE taking action
         prev_position = self.current_position_latlon
@@ -660,9 +664,7 @@ class MarineEnv:
             # Correct indexing for a list of lists (2D array)
             if self.bathymetry_maze[int(grid_lat)][int(grid_lon)] > 0: # Assuming >0 means land
                 is_on_land = True
-                penalty = -5000
-                print(f"  ⚠️ LAND COLLISION at {new_position_latlon}! Depth: {self.bathymetry_maze[int(grid_lat)][int(grid_lon)]} Rewards set to {penalty}")
-                reward = penalty
+               
                 # Revert position and apply penalty
                 new_position_latlon = prev_position
                 done = True # End episode on land collision
@@ -671,7 +673,6 @@ class MarineEnv:
             is_on_land = True
             print(f"  ⚠️ OUT OF BOUNDS at {new_position_latlon}! Treating as land.")
             new_position_latlon = prev_position
-            # reward = -1000.0 # Severe penalty for out of bounds - now handled in _calculate_reward
             done = True # End episode on out of bounds
         
         # OBSTACLE HANDLING (keep your existing code)
@@ -748,7 +749,7 @@ class MarineEnv:
             'out_of_bounds_occurred': (not (0 <= int(grid_lat) < self.num_lat_cells and 0 <= int(grid_lon) < self.num_lon_cells)) # Pass out of bounds status
         }
         
-        reward_breakdown = self._calculate_reward(reward_info)
+        reward_breakdown = self._calculate_reward(reward_info, episode) # Pass episode to reward calculation
         total_reward = reward_breakdown['total_reward']
 
         next_state = self._get_state()
@@ -875,7 +876,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             if episode > 150:  # Wait longer before adding obstacles
                 obstacle_present = random.random() < 0.003  # 0.3% chance
             
-            next_state, reward, done, info = env.step(action, obstacle_present)
+            next_state, reward, done, info = env.step(action, obstacle_present, episode) # Pass current episode
             
             # Accumulate reward breakdown
             for key, value in info['reward_breakdown'].items():
