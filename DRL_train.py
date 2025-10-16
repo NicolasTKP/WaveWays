@@ -262,20 +262,20 @@ class MarineEnv:
         progress = prev_distance - new_distance  # Positive = moving closer
         
         if progress > 1:
-            base_reward = progress * 60.0
+            base_reward = progress * 10.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
             reward_breakdown['progress_reward'] = base_reward
         else:
-            regression_penalty = abs(progress) * 60.0
+            regression_penalty = abs(progress) * 10.0
             reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         if new_distance < 50:
-            proximity_bonus = (50 - new_distance) * 2.5
+            proximity_bonus = (50 - new_distance) * 5.5
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         distance_penalty = new_distance * 0.2
@@ -291,7 +291,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 20
+            heading_reward = (180 - heading_diff) / 180.0 * 50
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -299,7 +299,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 2000.0
+                landmark_bonus = 5000.0
                 reward_breakdown['landmark_bonus'] = landmark_bonus
                 self.bonus_received_landmarks.add(self.current_landmark_idx)
                 print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
@@ -310,7 +310,7 @@ class MarineEnv:
         # 5. MOVEMENT REQUIREMENT (PREVENT STAYING STILL)
         # ============================================================================
         if distance_travelled < 3.0:
-            stuck_penalty = (3.0 - distance_travelled) * 50.0
+            stuck_penalty = (3.0 - distance_travelled) * 80.0
             reward_breakdown['stuck_penalty'] = -stuck_penalty
             if distance_travelled < 1.0:
                 print(f"  🐌 BARELY MOVING: -{stuck_penalty:.1f} (only {distance_travelled:.1f}km)")
@@ -346,9 +346,9 @@ class MarineEnv:
 
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
-            reward_breakdown['land_collision_penalty'] = -2000.0 # Consistent with step()
+            reward_breakdown['land_collision_penalty'] = -5000.0 # Consistent with step()
         if out_of_bounds_occurred:
-            reward_breakdown['out_of_bounds_penalty'] = -1000.0 # Consistent with step()
+            reward_breakdown['out_of_bounds_penalty'] = -5000.0 # Consistent with step()
 
         # ============================================================================
         # 8. SPEED EFFICIENCY (SMALL PENALTY)
@@ -359,7 +359,7 @@ class MarineEnv:
         reward_breakdown['speed_efficiency_penalty'] = -speed_penalty
         
         if self.current_speed_knots < self.max_speed_knots * 0.4:
-            reward_breakdown['too_slow_penalty'] = -20.0
+            reward_breakdown['too_slow_penalty'] = -15.0
         
         # ============================================================================
         # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
@@ -383,7 +383,7 @@ class MarineEnv:
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
                 if lat_range_km < 10 and lon_range_km < 10:
-                    circular_penalty = 3000.0
+                    circular_penalty = 5000.0
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -404,8 +404,8 @@ class MarineEnv:
                         diff = 360 - diff
                     total_change += diff
                 
-                if total_change > 120:
-                    zigzag_penalty = 80.0
+                if total_change > 70:
+                    zigzag_penalty = 200.0
                     reward_breakdown['excessive_turning_penalty'] = -zigzag_penalty
                     print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
         
@@ -413,7 +413,7 @@ class MarineEnv:
         # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
         total_reward = sum(reward_breakdown.values())
-        reward_breakdown['total_reward'] = np.clip(total_reward, -5000, 5000)
+        reward_breakdown['total_reward'] = np.clip(total_reward, -10000000, 1000000)
         
         return reward_breakdown
 
@@ -660,7 +660,7 @@ class MarineEnv:
             # Correct indexing for a list of lists (2D array)
             if self.bathymetry_maze[int(grid_lat)][int(grid_lon)] > 0: # Assuming >0 means land
                 is_on_land = True
-                penalty = -3000
+                penalty = -5000
                 print(f"  ⚠️ LAND COLLISION at {new_position_latlon}! Depth: {self.bathymetry_maze[int(grid_lat)][int(grid_lon)]} Rewards set to {penalty}")
                 reward = penalty
                 # Revert position and apply penalty
