@@ -657,6 +657,7 @@ class MarineEnv:
 
         # Check for land collision (bathymetry depth > 0)
         is_on_land = False
+        out_of_bounds_occurred = False # New flag for clarity
         grid_lat, grid_lon = lat_lon_to_grid_coords(new_lat, new_lon, *self.grid_params)
         
         # Ensure grid coordinates are within bounds before accessing bathymetry_maze
@@ -664,17 +665,15 @@ class MarineEnv:
             # Correct indexing for a list of lists (2D array)
             if self.bathymetry_maze[int(grid_lat)][int(grid_lon)] > 0: # Assuming >0 means land
                 is_on_land = True
-               
-                # Revert position and apply penalty
-                new_position_latlon = prev_position
-                done = True # End episode on land collision
+                new_position_latlon = prev_position # Revert position
+                # Removed: done = True # End episode on land collision
         else:
             # If outside grid bounds, treat as land or invalid area
-            is_on_land = True
+            out_of_bounds_occurred = True
             print(f"  ⚠️ OUT OF BOUNDS at {new_position_latlon}! Treating as land.")
-            new_position_latlon = prev_position
-            done = True # End episode on out of bounds
-        
+            new_position_latlon = prev_position # Revert position
+            # Removed: done = True # End episode on out of bounds
+
         # OBSTACLE HANDLING (keep your existing code)
         rerouted_path_latlon = None
         obstacle_info = None
@@ -690,6 +689,10 @@ class MarineEnv:
                     print(f"Large obstacle ({obstacle_size_km:.2f} km) - Using D* Lite rerouting")
         # ... your D* Lite code ...
                     pass
+
+        # If a land collision or out of bounds occurred, the position has already been reverted.
+        # The episode will not terminate immediately, but a penalty will be applied.
+        # The agent will get a chance to learn from this penalty in the next step.
 
         self.current_position_latlon = new_position_latlon
         self.drl_path_segment.append(new_position_latlon)
@@ -746,7 +749,7 @@ class MarineEnv:
             'distance_travelled': distance_travelled_km,
             'revisited_landmark': revisited_landmark, # Add this flag
             'land_collision_occurred': is_on_land, # Pass land collision status
-            'out_of_bounds_occurred': (not (0 <= int(grid_lat) < self.num_lat_cells and 0 <= int(grid_lon) < self.num_lon_cells)) # Pass out of bounds status
+            'out_of_bounds_occurred': out_of_bounds_occurred # Pass out of bounds status
         }
         
         reward_breakdown = self._calculate_reward(reward_info, episode) # Pass episode to reward calculation
