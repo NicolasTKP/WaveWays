@@ -262,13 +262,13 @@ class MarineEnv:
         progress = prev_distance - new_distance  # Positive = moving closer
         
         if progress > 1:
-            base_reward = progress * 20.0
+            base_reward = progress * 17.5
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
             reward_breakdown['progress_reward'] = base_reward
         else:
-            regression_penalty = abs(progress) * 25.0
+            regression_penalty = abs(progress) * 50.0
             reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
@@ -278,7 +278,7 @@ class MarineEnv:
             proximity_bonus = (50 - new_distance) * 5.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.2
+        distance_penalty = new_distance * 0.15
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -291,7 +291,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 50
+            heading_reward = (180 - heading_diff) / 180.0 * 100 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -408,7 +408,7 @@ class MarineEnv:
                         diff = 360 - diff
                     total_change += diff
                 
-                if total_change > 100:
+                if total_change > 90:
                     zigzag_penalty = 200.0
                     reward_breakdown['excessive_turning_penalty'] = -zigzag_penalty
                     print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
@@ -903,12 +903,13 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         episode_landmarks.append(env.current_landmark_idx)
         
         # Print detailed reward breakdown at the end of the episode
-        print(f"\n--- Episode {episode+1} Reward Breakdown ---")
-        for key, value in episode_reward_breakdown.items():
-            if key != 'total_reward':
-                print(f"  {key.replace('_', ' ').title()}: {value:.2f}")
-        print(f"  Total Episode Reward: {episode_reward_breakdown['total_reward']:.2f}")
-        print("------------------------------------")
+        if (episode % 20 == 0):
+            print(f"\n--- Episode {episode+1} Reward Breakdown ---")
+            for key, value in episode_reward_breakdown.items():
+                if key != 'total_reward':
+                    print(f"  {key.replace('_', ' ').title()}: {value:.2f}")
+            print(f"  Total Episode Reward: {episode_reward_breakdown['total_reward']:.2f}")
+            print("------------------------------------")
 
         # Enhanced logging with progress tracking
         if (episode + 1) % 5 == 0:
@@ -983,7 +984,7 @@ if __name__ == "__main__":
     
     trained_agent, episode_rewards = train_ddpg_agent(
         env, agent, replay_buffer, 
-        num_episodes=1000,  # Keep 500 episodes for now
+        num_episodes=1200,  # Keep 500 episodes for now
         batch_size=64,     # Keep 64 batch size for now
         visualize_every_n_episodes=20,
         full_astar_path_latlon=full_astar_path_latlon,
