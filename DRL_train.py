@@ -261,8 +261,8 @@ class MarineEnv:
         # ============================================================================
         progress = prev_distance - new_distance  # Positive = moving closer
         
-        if progress > 1:
-            base_reward = progress * 17.5
+        if progress > 2:
+            base_reward = progress / 2 * 35.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
@@ -274,11 +274,11 @@ class MarineEnv:
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        if new_distance < 50:
-            proximity_bonus = (50 - new_distance) * 5.0
+        if new_distance < 40:
+            proximity_bonus = (40 - new_distance) * 8.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.15
+        distance_penalty = new_distance * 0.20
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -291,7 +291,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 100 # Increased heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 130 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -299,7 +299,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 10000.0
+                landmark_bonus = 15000.0
                 reward_breakdown['landmark_bonus'] = landmark_bonus
                 self.bonus_received_landmarks.add(self.current_landmark_idx)
                 print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
@@ -373,10 +373,10 @@ class MarineEnv:
             self.position_history = []
         
         self.position_history.append(self.current_position_latlon)
-        if len(self.position_history) > 8:
+        if len(self.position_history) > 5:
             self.position_history.pop(0)
             
-            if len(self.position_history) == 8:
+            if len(self.position_history) == 5:
                 lats = [p[0] for p in self.position_history]
                 lons = [p[1] for p in self.position_history]
                 
@@ -386,8 +386,8 @@ class MarineEnv:
                 lat_range_km = lat_range * 111.0
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
-                if lat_range_km < 10 and lon_range_km < 10:
-                    circular_penalty = 5000.0
+                if lat_range_km < 12 and lon_range_km < 12:
+                    circular_penalty = 8000.0
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -417,7 +417,7 @@ class MarineEnv:
         # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
         total_reward = sum(reward_breakdown.values())
-        reward_breakdown['total_reward'] = np.clip(total_reward, -10000000, 1000000)
+        reward_breakdown['total_reward'] = np.clip(total_reward, -1000000, 1000000)
         
         return reward_breakdown
 
@@ -718,7 +718,7 @@ class MarineEnv:
 
         # Check if landmark reached
         revisited_landmark = False
-        if new_distance_to_target < 15:
+        if new_distance_to_target < 8:
             # Before incrementing, add the *current* landmark (which is now reached) to visited
             if self.current_landmark_idx < len(self.landmark_points):
                 self.visited_landmarks.add(self.current_landmark_idx)
@@ -818,6 +818,12 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     plt.tight_layout()
     plt.savefig(f"output/episode_{episode+1}.png", dpi=100)
     plt.close(fig)
+    
+def normalize_reward_linear(reward):
+    old_min, old_max = -10000000, 1000000
+    new_min, new_max = -10, 10
+    normalized = ((reward - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
+    return np.clip(normalized, new_min, new_max)  # optional safety clip
 
 # --- Training Loop ---
 
@@ -887,7 +893,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             
             # CLIP reward before storing (prevent extreme values in buffer)
             # The 'reward' returned by env.step is already clipped total_reward
-            reward = np.clip(reward, -1000, 1000) 
+            reward = normalize_reward_linear(reward)
             
             replay_buffer.push(state, action, next_state, reward, done)
             
@@ -903,7 +909,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         episode_landmarks.append(env.current_landmark_idx)
         
         # Print detailed reward breakdown at the end of the episode
-        if (episode % 20 == 0):
+        if (episode % 10 == 0):
             print(f"\n--- Episode {episode+1} Reward Breakdown ---")
             for key, value in episode_reward_breakdown.items():
                 if key != 'total_reward':
