@@ -13,6 +13,7 @@ from math import radians, sin, cos, sqrt, atan2, degrees
 import matplotlib.pyplot as plt
 import time
 import geopandas as gpd
+from scipy.spatial import KDTree # Added for faster nearest neighbor search
 
 # Import necessary functions from utils.py and d_star_lite.py
 from utils import (
@@ -24,7 +25,7 @@ from utils import (
     get_optimal_path_route, haversine, generate_landmark_points,
     create_weather_penalty_grid, Node, astar, create_bathymetry_grid,
     lat_lon_to_grid_coords, grid_coords_to_lat_lon,
-    generate_optimized_route_and_landmarks # Added this import
+    generate_optimized_route_and_landmarks, create_astar_grid # Added this import
 )
 from d_star_lite import DStarLite, find_d_star_lite_route
 
@@ -165,11 +166,8 @@ class MarineEnv:
         # Normalize distance (typical max distance between landmarks)
         normalized[13] = state[13] / 200.0  # Clamp to [0, 1]
 
-        # Normalize bearing to A* path point [0, 360] to [-1, 1]
-        normalized[14] = (state[14] / 180.0) - 1.0
-        
-        # Normalize distance to A* path point (typical max distance)
-        normalized[15] = state[15] / 200.0  # Clamp to [0, 1]
+        # Normalize distance to A* path grid (typical max distance)
+        normalized[14] = state[14] / 200.0  # Clamp to [0, 1]
         
         return normalized
 
@@ -205,17 +203,8 @@ class MarineEnv:
             self.landmark_points[self.current_landmark_idx]
         ).km
 
-        # Efficiently get the next A* path point info
-        if self.current_astar_path_idx < len(self.full_astar_path_latlon):
-            next_astar_point = self.full_astar_path_latlon[self.current_astar_path_idx]
-            bearing_to_astar_point = self._calculate_bearing(self.current_position_latlon, next_astar_point)
-            distance_to_astar_point = geodesic(self.current_position_latlon, next_astar_point).km
-        else:
-            # If agent has passed all A* path points, target the last one
-            next_astar_point = self.full_astar_path_latlon[-1] if self.full_astar_path_latlon else (0.0, 0.0)
-            bearing_to_astar_point = self._calculate_bearing(self.current_position_latlon, next_astar_point)
-            distance_to_astar_point = geodesic(self.current_position_latlon, next_astar_point).km
-
+        # Calculate minimum distance to A* path grid
+        min_dist_to_astar_path_grid = self._get_min_distance_to_astar_path_grid(current_lat, current_lon)
 
         state = np.array([
             current_lat, current_lon,
@@ -225,8 +214,7 @@ class MarineEnv:
             sea_currents["wind_wave_height"], sea_currents["wind_wave_period"], sea_currents["wind_wave_direction"],
             self.vessel["fuel_tank_remaining_t"],
             distance_to_target_landmark,
-            bearing_to_astar_point,
-            distance_to_astar_point
+            min_dist_to_astar_path_grid # New state variable
         ], dtype=np.float32)
         
         # NORMALIZE before returning
@@ -277,12 +265,9 @@ class MarineEnv:
         land_collision_occurred = reward_info.get('land_collision_occurred', False)
         out_of_bounds_occurred = reward_info.get('out_of_bounds_occurred', False)
 
-        # Extract A* path info from the current state (last two elements)
-        # The state is already normalized, so we need to denormalize for meaningful calculations
+        # Extract A* path info from the current state (last element)
         current_state = self._get_state() # Get the current (normalized) state
-        # Denormalize bearing_to_astar_point (state[14]) and distance_to_astar_point (state[15])
-        bearing_to_astar_point = (current_state[14] + 1.0) * 180.0
-        distance_to_astar_point = current_state[15] * 200.0 # Assuming max distance 200km for normalization
+        min_dist_to_astar_path_grid = current_state[14] * 200.0 # Denormalize
 
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
@@ -290,7 +275,7 @@ class MarineEnv:
         progress = prev_distance - new_distance  # Positive = moving closer
         
         if progress > 2:
-            base_reward = progress / 2 * 10.0
+            base_reward = progress / 2 * 11.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
@@ -302,8 +287,8 @@ class MarineEnv:
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        if new_distance < 15:
-            proximity_bonus = (15 - new_distance) * 20.0
+        if new_distance < 10:
+            proximity_bonus = (10 - new_distance) * 25.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         distance_penalty = new_distance * 0.15
@@ -445,21 +430,13 @@ class MarineEnv:
         # 10. A* PATH FOLLOWING REWARD (GUIDANCE)
         # ============================================================================
         astar_following_reward = 0.0
-        if distance_to_astar_point < 50: # Only reward/penalize if relatively close to A* path
+        if min_dist_to_astar_path_grid < 50: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (50 - distance_to_astar_point) * 2.5 # Max 25 reward if on path
+            astar_proximity_reward = (50 - min_dist_to_astar_path_grid) * 1 # Max 25 reward if on path
             astar_following_reward += astar_proximity_reward
-
-            # Reward for heading towards the A* path
-            heading_diff_astar = abs(self.current_heading_deg - bearing_to_astar_point)
-            if heading_diff_astar > 180:
-                heading_diff_astar = 360 - heading_diff_astar
-            
-            astar_heading_reward = (180 - heading_diff_astar) / 180.0 * 25.0 # Max 10 reward for perfect alignment
-            astar_following_reward += astar_heading_reward
         else:
             # Penalty for being too far from the A* path
-            astar_following_reward -= (distance_to_astar_point - 50) * 0.5 # Penalty increases with distance
+            astar_following_reward -= (min_dist_to_astar_path_grid - 50) * 0.5 # Penalty increases with distance
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
@@ -485,12 +462,13 @@ class MarineEnv:
         # CRITICAL: Define these BEFORE reset() is called
         # State: [lat, lon, speed, heading, target_lat, target_lon, 
         #         wave_h, wave_p, wave_d, wind_wave_h, wind_wave_p, wind_wave_d, fuel, distance,
-        #         bearing_to_astar_point, distance_to_astar_point]
-        self.state_dim = 16 
+        #         min_dist_to_astar_path_grid]
+        self.state_dim = 15 # Reduced state dimension
         self.action_dim = 2
         self.max_speed_knots = self.vessel["speed_knots"]
         self.max_heading_change_deg = 30
         self.time_step_hours = 2.0
+        self.astar_proximity_threshold_km = 10.0 # New constant for A* path proximity check
 
         # Initialize tracking variables
         self.current_position_latlon = None
@@ -504,6 +482,27 @@ class MarineEnv:
         self.full_episode_drl_path = [] # Added for full episode path tracking
         self.rerouted_paths_history = []
         self.visited_landmarks = set() # Initialize set to store visited landmark indices
+
+        # Create A* path grid
+        self.astar_path_grid = create_astar_grid(full_astar_path_latlon, grid_params)
+        print(f"A* path grid created with {np.sum(self.astar_path_grid)} path cells.")
+
+        # Pre-compute (lat, lon) coordinates of all A* path cells for faster distance calculation
+        self.astar_path_latlon_points = []
+        for r in range(self.num_lat_cells):
+            for c in range(self.num_lon_cells):
+                if self.astar_path_grid[r][c] == 1:
+                    lat, lon = grid_coords_to_lat_lon(r, c, *self.grid_params[:4])
+                    self.astar_path_latlon_points.append((lat, lon))
+        print(f"Pre-computed {len(self.astar_path_latlon_points)} A* path (lat,lon) points.")
+
+        # Create a KDTree for efficient nearest neighbor queries on A* path points
+        if self.astar_path_latlon_points:
+            self.astar_path_kdtree = KDTree(self.astar_path_latlon_points)
+            print("KDTree created for A* path points.")
+        else:
+            self.astar_path_kdtree = None
+            print("Warning: No A* path points to build KDTree.")
 
         # PRE-CACHE WEATHER DATA (keep your existing code)
         self.weather_cache = {}
@@ -564,7 +563,59 @@ class MarineEnv:
         # NOW call reset() - all attributes are defined
         self.reset()
 
+    def _get_min_distance_to_astar_path_grid(self, current_lat, current_lon):
+        """
+        Calculates the minimum geodesic distance from the current position
+        to any 'on-path' cell in the astar_path_grid.
+        """
+        if self.astar_path_kdtree is None or not self.astar_path_latlon_points:
+            return 200.0 # Return max distance if no path or KDTree
+
+        # Use query_ball_point to find all A* path points within a certain radius (Euclidean distance)
+        # The radius needs to be in the same units as the KDTree points (degrees lat/lon).
+        # Approximate conversion from km to degrees for the current region.
+        # Assuming 1 degree lat ~ 111 km, 1 degree lon ~ 111 * cos(avg_lat) km
         
+        # A more robust way to handle radius in KDTree for lat/lon is to convert lat/lon to a 3D Cartesian coordinate system,
+        # but for simplicity and given the relatively small region, a degree approximation is often used.
+        # Let's use a simple approximation for the radius in degrees.
+        
+        # Average latitude for the region (can be approximated or taken from grid_params)
+        avg_lat_rad = radians((self.min_lat + self.num_lat_cells * self.lat_step) / 2)
+        
+        # Approximate degrees per km
+        deg_per_km_lat = 1 / 111.0
+        deg_per_km_lon = 1 / (111.0 * cos(avg_lat_rad))
+        
+        # Convert proximity_threshold_km to degrees
+        radius_deg_lat = self.astar_proximity_threshold_km * deg_per_km_lat
+        radius_deg_lon = self.astar_proximity_threshold_km * deg_per_km_lon
+        
+        # Use the larger of the two to ensure coverage, or a combined metric
+        # For simplicity, let's use the latitudinal degree equivalent as a general radius.
+        radius_deg = radius_deg_lat # This is a rough approximation for the search radius in degrees
+
+        # Find indices of all points within the approximate radius
+        indices_in_range = self.astar_path_kdtree.query_ball_point(
+            (current_lat, current_lon), 
+            r=radius_deg
+        )
+        
+        min_geodesic_dist = 200.0 # Default to max distance if no points found in range
+
+        if indices_in_range:
+            # If points are found within the Euclidean radius, calculate their actual geodesic distances
+            # and find the minimum among them.
+            geodesic_distances = []
+            for idx in indices_in_range:
+                path_lat, path_lon = self.astar_path_latlon_points[idx]
+                dist = geodesic((current_lat, current_lon), (path_lat, path_lon)).km
+                geodesic_distances.append(dist)
+            
+            min_geodesic_dist = min(geodesic_distances)
+        
+        return min_geodesic_dist
+
     def reset(self):
         """Enhanced reset with all tracking variables properly initialized and robust landmark handling"""
         if not self.landmark_points:
@@ -617,8 +668,8 @@ class MarineEnv:
         self.bonus_received_landmarks = set() # Initialize set to track landmarks for which bonus has been received
         self.bonus_received_landmarks.add(0) # Bonus for starting landmark is implicitly received
         
-        # Initialize A* path tracking
-        self.current_astar_path_idx = 0
+        # A* path tracking is no longer needed as we use the grid
+        # self.current_astar_path_idx = 0
 
         print(f"DEBUG: Resetting episode. Starting position: {self.current_position_latlon}, Target landmark index: {self.current_landmark_idx}")
 
@@ -652,6 +703,7 @@ class MarineEnv:
         distance_ahead_km = random.uniform(10, 30)  # 10-30km ahead
         
         R = 6371
+
         lat_offset = (distance_ahead_km / R) * (180 / np.pi) * cos(heading_rad)
         lon_offset = (distance_ahead_km / R) * (180 / np.pi) * sin(heading_rad) / cos(radians(self.current_position_latlon[0]))
         
@@ -754,15 +806,15 @@ class MarineEnv:
         self.full_episode_drl_path.append(new_position_latlon) # Append to full episode path
         self.total_eta_hours += self.time_step_hours
 
-        # Update current_astar_path_idx if agent has passed the current A* path point
-        if self.current_astar_path_idx < len(self.full_astar_path_latlon):
-            current_astar_target = self.full_astar_path_latlon[self.current_astar_path_idx]
-            distance_to_current_astar_target = geodesic(self.current_position_latlon, current_astar_target).km
+        # A* path tracking is no longer needed as we use the grid
+        # if self.current_astar_path_idx < len(self.full_astar_path_latlon):
+        #     current_astar_target = self.full_astar_path_latlon[self.current_astar_path_idx]
+        #     distance_to_current_astar_target = geodesic(self.current_position_latlon, current_astar_target).km
             
-            # If the agent is within a certain threshold of the current A* path point, advance the index
-            if distance_to_current_astar_target < 5.0: # 5km threshold
-                self.current_astar_path_idx += 1
-                # print(f"  ➡️ Advanced A* path index to {self.current_astar_path_idx}")
+        #     # If the agent is within a certain threshold of the current A* path point, advance the index
+        #     if distance_to_current_astar_target < 5.0: # 5km threshold
+        #         self.current_astar_path_idx += 1
+        #         # print(f"  ➡️ Advanced A* path index to {self.current_astar_path_idx}")
 
         # Fuel consumption
 
@@ -819,7 +871,7 @@ class MarineEnv:
             'out_of_bounds_occurred': out_of_bounds_occurred # Pass out of bounds status
         }
         
-        reward_breakdown = self._calculate_reward(reward_info, episode) # Pass episode to reward calculation
+        reward_breakdown = self._calculate_reward(reward_info, episode) # Pass current episode
         total_reward = reward_breakdown['total_reward']
 
         next_state = self._get_state()

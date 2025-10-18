@@ -834,6 +834,20 @@ def find_closest_sea_node(land_grid_coords, bathymetry_maze):
     print(f"Warning: No sea node found around {land_grid_coords}. This might indicate an isolated landmass or error.")
     return land_grid_coords # Return original if no sea found (will likely lead to A* failure)
 
+def create_astar_grid(full_astar_path_latlon, grid_params):
+    """
+    Creates a grid representing the A* path.
+    Cells on the A* path are marked with 1, others with 0.
+    """
+    min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells = grid_params
+    astar_grid = np.zeros((num_lat_cells, num_lon_cells), dtype=int)
+
+    for lat, lon in full_astar_path_latlon:
+        row, col = lat_lon_to_grid_coords(lat, lon, min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells)
+        astar_grid[row, col] = 1
+    
+    return astar_grid.tolist()
+
 def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, random_state=50, 
                                            min_lon_region=99, max_lon_region=120, 
                                            min_lat_region=0, max_lat_region=8, 
