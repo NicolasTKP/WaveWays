@@ -164,6 +164,12 @@ class MarineEnv:
         
         # Normalize distance (typical max distance between landmarks)
         normalized[13] = state[13] / 200.0  # Clamp to [0, 1]
+
+        # Normalize bearing to A* path point [0, 360] to [-1, 1]
+        normalized[14] = (state[14] / 180.0) - 1.0
+        
+        # Normalize distance to A* path point (typical max distance)
+        normalized[15] = state[15] / 200.0  # Clamp to [0, 1]
         
         return normalized
 
@@ -199,6 +205,18 @@ class MarineEnv:
             self.landmark_points[self.current_landmark_idx]
         ).km
 
+        # Efficiently get the next A* path point info
+        if self.current_astar_path_idx < len(self.full_astar_path_latlon):
+            next_astar_point = self.full_astar_path_latlon[self.current_astar_path_idx]
+            bearing_to_astar_point = self._calculate_bearing(self.current_position_latlon, next_astar_point)
+            distance_to_astar_point = geodesic(self.current_position_latlon, next_astar_point).km
+        else:
+            # If agent has passed all A* path points, target the last one
+            next_astar_point = self.full_astar_path_latlon[-1] if self.full_astar_path_latlon else (0.0, 0.0)
+            bearing_to_astar_point = self._calculate_bearing(self.current_position_latlon, next_astar_point)
+            distance_to_astar_point = geodesic(self.current_position_latlon, next_astar_point).km
+
+
         state = np.array([
             current_lat, current_lon,
             self.current_speed_knots, self.current_heading_deg,
@@ -206,7 +224,9 @@ class MarineEnv:
             sea_currents["wave_height"], sea_currents["wave_period"], sea_currents["wave_direction"],
             sea_currents["wind_wave_height"], sea_currents["wind_wave_period"], sea_currents["wind_wave_direction"],
             self.vessel["fuel_tank_remaining_t"],
-            distance_to_target_landmark
+            distance_to_target_landmark,
+            bearing_to_astar_point,
+            distance_to_astar_point
         ], dtype=np.float32)
         
         # NORMALIZE before returning
@@ -242,6 +262,7 @@ class MarineEnv:
             'excessive_turning_penalty': 0.0,
             'land_collision_penalty': 0.0, # Added for land collision
             'out_of_bounds_penalty': 0.0, # Added for out of bounds
+            'astar_path_following_reward': 0.0, # New reward for A* path following
             'total_reward': 0.0
         }
         
@@ -255,7 +276,14 @@ class MarineEnv:
         revisited_landmark = reward_info['revisited_landmark'] # Extract the new flag
         land_collision_occurred = reward_info.get('land_collision_occurred', False)
         out_of_bounds_occurred = reward_info.get('out_of_bounds_occurred', False)
-        
+
+        # Extract A* path info from the current state (last two elements)
+        # The state is already normalized, so we need to denormalize for meaningful calculations
+        current_state = self._get_state() # Get the current (normalized) state
+        # Denormalize bearing_to_astar_point (state[14]) and distance_to_astar_point (state[15])
+        bearing_to_astar_point = (current_state[14] + 1.0) * 180.0
+        distance_to_astar_point = current_state[15] * 200.0 # Assuming max distance 200km for normalization
+
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
         # ============================================================================
@@ -268,17 +296,17 @@ class MarineEnv:
                 base_reward *= 1.3
             reward_breakdown['progress_reward'] = base_reward
         else:
-            regression_penalty = abs(progress) * 10.0
+            regression_penalty = abs(progress) * 15.0
             reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        if new_distance < 30:
-            proximity_bonus = (30 - new_distance) * 2.0
+        if new_distance < 15:
+            proximity_bonus = (15 - new_distance) * 20.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.10
+        distance_penalty = new_distance * 0.15
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -291,7 +319,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 25 # Increased heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 13 # heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -299,7 +327,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 2000.0
+                landmark_bonus = 2300.0
                 reward_breakdown['landmark_bonus'] = landmark_bonus
                 self.bonus_received_landmarks.add(self.current_landmark_idx)
                 print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
@@ -347,7 +375,7 @@ class MarineEnv:
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 500.0
+            base_penalty = 600.0
             scaled_penalty = base_penalty * max(1, episode / 300) # Increase penalty by 1% per episode
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
@@ -363,7 +391,7 @@ class MarineEnv:
         reward_breakdown['speed_efficiency_penalty'] = -speed_penalty
         
         if self.current_speed_knots < self.max_speed_knots * 0.4:
-            reward_breakdown['too_slow_penalty'] = -10.0
+            reward_breakdown['too_slow_penalty'] = -7.0
         
         # ============================================================================
         # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
@@ -386,8 +414,8 @@ class MarineEnv:
                 lat_range_km = lat_range * 111.0
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
-                if lat_range_km < 12 and lon_range_km < 12:
-                    circular_penalty = 500.0
+                if lat_range_km < 15 and lon_range_km < 15:
+                    circular_penalty = 1000.0
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -414,10 +442,32 @@ class MarineEnv:
                     print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
         
         # ============================================================================
-        # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
+        # 10. A* PATH FOLLOWING REWARD (GUIDANCE)
+        # ============================================================================
+        astar_following_reward = 0.0
+        if distance_to_astar_point < 50: # Only reward/penalize if relatively close to A* path
+            # Reward for being close to the A* path
+            astar_proximity_reward = (50 - distance_to_astar_point) * 2.5 # Max 25 reward if on path
+            astar_following_reward += astar_proximity_reward
+
+            # Reward for heading towards the A* path
+            heading_diff_astar = abs(self.current_heading_deg - bearing_to_astar_point)
+            if heading_diff_astar > 180:
+                heading_diff_astar = 360 - heading_diff_astar
+            
+            astar_heading_reward = (180 - heading_diff_astar) / 180.0 * 25.0 # Max 10 reward for perfect alignment
+            astar_following_reward += astar_heading_reward
+        else:
+            # Penalty for being too far from the A* path
+            astar_following_reward -= (distance_to_astar_point - 50) * 0.5 # Penalty increases with distance
+
+        reward_breakdown['astar_path_following_reward'] = astar_following_reward
+        
+        # ============================================================================
+        # 11. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
         total_reward = sum(reward_breakdown.values())
-        reward_breakdown['total_reward'] = np.clip(total_reward, -5000, 5000)
+        reward_breakdown['total_reward'] = np.clip(total_reward, -2500, 2500)
         
         return reward_breakdown
 
@@ -433,7 +483,10 @@ class MarineEnv:
         self.min_lat, self.min_lon, self.lat_step, self.lon_step, self.num_lat_cells, self.num_lon_cells = grid_params
 
         # CRITICAL: Define these BEFORE reset() is called
-        self.state_dim = 14
+        # State: [lat, lon, speed, heading, target_lat, target_lon, 
+        #         wave_h, wave_p, wave_d, wind_wave_h, wind_wave_p, wind_wave_d, fuel, distance,
+        #         bearing_to_astar_point, distance_to_astar_point]
+        self.state_dim = 16 
         self.action_dim = 2
         self.max_speed_knots = self.vessel["speed_knots"]
         self.max_heading_change_deg = 30
@@ -563,6 +616,9 @@ class MarineEnv:
         self.visited_landmarks.add(0) # Add the starting landmark (index 0)
         self.bonus_received_landmarks = set() # Initialize set to track landmarks for which bonus has been received
         self.bonus_received_landmarks.add(0) # Bonus for starting landmark is implicitly received
+        
+        # Initialize A* path tracking
+        self.current_astar_path_idx = 0
 
         print(f"DEBUG: Resetting episode. Starting position: {self.current_position_latlon}, Target landmark index: {self.current_landmark_idx}")
 
@@ -578,7 +634,6 @@ class MarineEnv:
         y = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)
         bearing = degrees(atan2(x, y))
         return (bearing + 360) % 360
-
 
     def _generate_obstacle(self):
         """Generate a realistic obstacle with size (up to 5km x 5km)"""
@@ -698,6 +753,18 @@ class MarineEnv:
         self.drl_path_segment.append(new_position_latlon)
         self.full_episode_drl_path.append(new_position_latlon) # Append to full episode path
         self.total_eta_hours += self.time_step_hours
+
+        # Update current_astar_path_idx if agent has passed the current A* path point
+        if self.current_astar_path_idx < len(self.full_astar_path_latlon):
+            current_astar_target = self.full_astar_path_latlon[self.current_astar_path_idx]
+            distance_to_current_astar_target = geodesic(self.current_position_latlon, current_astar_target).km
+            
+            # If the agent is within a certain threshold of the current A* path point, advance the index
+            if distance_to_current_astar_target < 5.0: # 5km threshold
+                self.current_astar_path_idx += 1
+                # print(f"  ➡️ Advanced A* path index to {self.current_astar_path_idx}")
+
+        # Fuel consumption
 
         # Fuel consumption
         fuel_consumed_t = (self.vessel["fuel_consumption_t_per_day"] / 24.0) * self.time_step_hours
@@ -820,7 +887,7 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     plt.close(fig)
     
 def normalize_reward_linear(reward):
-    old_min, old_max = -5000, 5000
+    old_min, old_max = -2500, 2500
     new_min, new_max = -1, 1
     normalized = ((reward - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
     return np.clip(normalized, new_min, new_max)  # optional safety clip
@@ -856,7 +923,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             'revisit_landmark_penalty': 0.0, 'speed_efficiency_penalty': 0.0,
             'too_slow_penalty': 0.0, 'circular_motion_penalty': 0.0,
             'excessive_turning_penalty': 0.0, 'land_collision_penalty': 0.0,
-            'out_of_bounds_penalty': 0.0, 'total_reward': 0.0
+            'out_of_bounds_penalty': 0.0, 'astar_path_following_reward': 0.0, 'total_reward': 0.0
         }
 
         max_steps = 80  # INCREASED from 50
@@ -894,7 +961,6 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             # CLIP reward before storing (prevent extreme values in buffer)
             # The 'reward' returned by env.step is already clipped total_reward
             reward = normalize_reward_linear(reward)
-            
             replay_buffer.push(state, action, next_state, reward, done)
             
             state = next_state
