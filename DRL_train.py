@@ -262,23 +262,23 @@ class MarineEnv:
         progress = prev_distance - new_distance  # Positive = moving closer
         
         if progress > 2:
-            base_reward = progress / 2 * 35.0
+            base_reward = progress / 2 * 10.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
             reward_breakdown['progress_reward'] = base_reward
         else:
-            regression_penalty = abs(progress) * 50.0
+            regression_penalty = abs(progress) * 10.0
             reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        if new_distance < 40:
-            proximity_bonus = (40 - new_distance) * 8.0
+        if new_distance < 30:
+            proximity_bonus = (30 - new_distance) * 2.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.20
+        distance_penalty = new_distance * 0.10
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -291,7 +291,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 130 # Increased heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 25 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -299,7 +299,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 15000.0
+                landmark_bonus = 2000.0
                 reward_breakdown['landmark_bonus'] = landmark_bonus
                 self.bonus_received_landmarks.add(self.current_landmark_idx)
                 print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
@@ -347,12 +347,12 @@ class MarineEnv:
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 2500.0
-            scaled_penalty = base_penalty * max(1, episode / 150) # Increase penalty by 1% per episode
+            base_penalty = 500.0
+            scaled_penalty = base_penalty * max(1, episode / 300) # Increase penalty by 1% per episode
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
         if out_of_bounds_occurred:
-            reward_breakdown['out_of_bounds_penalty'] = -5000.0 # Consistent with step()
+            reward_breakdown['out_of_bounds_penalty'] = -1000.0 # Consistent with step()
 
         # ============================================================================
         # 8. SPEED EFFICIENCY (SMALL PENALTY)
@@ -387,7 +387,7 @@ class MarineEnv:
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
                 if lat_range_km < 12 and lon_range_km < 12:
-                    circular_penalty = 8000.0
+                    circular_penalty = 500.0
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -417,7 +417,7 @@ class MarineEnv:
         # 10. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
         total_reward = sum(reward_breakdown.values())
-        reward_breakdown['total_reward'] = np.clip(total_reward, -1000000, 1000000)
+        reward_breakdown['total_reward'] = np.clip(total_reward, -5000, 5000)
         
         return reward_breakdown
 
@@ -820,8 +820,8 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     plt.close(fig)
     
 def normalize_reward_linear(reward):
-    old_min, old_max = -10000000, 1000000
-    new_min, new_max = -10, 10
+    old_min, old_max = -5000, 5000
+    new_min, new_max = -1, 1
     normalized = ((reward - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
     return np.clip(normalized, new_min, new_max)  # optional safety clip
 
