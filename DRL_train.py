@@ -258,6 +258,8 @@ class MarineEnv:
             'land_collision_penalty': 0.0, # Added for land collision
             'out_of_bounds_penalty': 0.0, # Added for out of bounds
             'astar_path_following_reward': 0.0, # New reward for A* path following
+            'segment_distance_efficiency_reward': 0.0, # New reward for distance efficiency
+            'segment_time_efficiency_reward': 0.0,     # New reward for time efficiency
             'total_reward': 0.0
         }
         
@@ -282,7 +284,7 @@ class MarineEnv:
         distance_change = prev_distance - new_distance
         if distance_change > 0:
             # Reward getting closer (even if not breaking record)
-            reward_breakdown['progress_reward'] = distance_change * 7.5
+            reward_breakdown['progress_reward'] = distance_change * 9.0
         else:
             # Small penalty for moving away (allow detours)
             reward_breakdown['regression_penalty'] = distance_change * 10.0
@@ -291,7 +293,7 @@ class MarineEnv:
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         if new_distance < 15:
-            proximity_bonus = (15 - new_distance) * 25.0
+            proximity_bonus = (15 - new_distance) * 20.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         distance_penalty = new_distance * 0.20
@@ -314,14 +316,11 @@ class MarineEnv:
         # 4. LANDMARK COMPLETION (HUGE BONUS)
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
-            if self.current_landmark_idx not in self.bonus_received_landmarks:
-                landmark_bonus = 2300.0
-                reward_breakdown['landmark_bonus'] = landmark_bonus
-                self.bonus_received_landmarks.add(self.current_landmark_idx)
-                print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points (first time)")
-            else:
-                print(f"  🎯 LANDMARK REACHED! (already received bonus)")
-        
+            # Base reward for reaching any landmark
+            landmark_bonus = 1800.0
+            reward_breakdown['landmark_bonus'] = landmark_bonus
+            print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points")
+
         # ============================================================================
         # 5. MOVEMENT REQUIREMENT (PREVENT STAYING STILL)
         # ============================================================================
@@ -435,16 +434,42 @@ class MarineEnv:
         astar_following_reward = 0.0
         if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 2.5 # Max 25 reward if on path
+            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 3.0 # Max 25 reward if on path
             astar_following_reward += astar_proximity_reward
         else:
             # Penalty for being too far from the A* path
-            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.25 # Penalty increases with distance
+            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.15 # Penalty increases with distance
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
         # ============================================================================
-        # 11. REWARD CLIPPING (PREVENT EXTREME VALUES)
+        # 11. EFFICIENCY REWARDS (SEGMENT-BASED - APPLIED ONLY WHEN LANDMARK REACHED)
+        # ============================================================================
+        segment_distance_travelled = reward_info.get('segment_distance_travelled', 0.0)
+        segment_time_spent = reward_info.get('segment_time_spent', 0.0)
+
+        # Only apply these rewards if a landmark was just reached and we have valid segment data
+        if self.current_landmark_idx > prev_landmark_idx:
+            epsilon = 1e-6 # To prevent division by zero
+
+            # Distance efficiency reward: inversely proportional to distance travelled
+            # Shorter distance -> higher reward. Max reward for very short distance, approaches 0 for very long.
+            # Ensure a base reward is always given, then scale based on efficiency.
+            base_distance_reward = 200.0 # Base reward for completing the segment distance
+            distance_efficiency_bonus = max(0.0, 10000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
+            reward_breakdown['segment_distance_efficiency_reward'] = base_distance_reward + distance_efficiency_bonus
+            print(f"  📏 Distance Efficiency Reward: {reward_breakdown['segment_distance_efficiency_reward']:.2f} (Travelled: {segment_distance_travelled:.1f}km)")
+
+            # Time efficiency reward: inversely proportional to time spent
+            # Shorter time -> higher reward. Max reward for very short time, approaches 0 for very long.
+            # Ensure a base reward is always given, then scale based on efficiency.
+            base_time_reward = 200.0 # Base reward for completing the segment time
+            time_efficiency_bonus = max(0.0, 500.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
+            reward_breakdown['segment_time_efficiency_reward'] = base_time_reward + time_efficiency_bonus
+            print(f"  ⏱️ Time Efficiency Reward: {reward_breakdown['segment_time_efficiency_reward']:.2f} (Spent: {segment_time_spent:.1f}h)")
+
+        # ============================================================================
+        # 12. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
         total_reward = sum(reward_breakdown.values())
         reward_breakdown['total_reward'] = np.clip(total_reward, -2500, 2500)
@@ -485,6 +510,8 @@ class MarineEnv:
         self.full_episode_drl_path = [] # Added for full episode path tracking
         self.rerouted_paths_history = []
         self.visited_landmarks = set() # Initialize set to store visited landmark indices
+        self.total_distance_segment = 0.0 # Track distance for current segment
+        self.total_time_segment = 0.0     # Track time for current segment
 
         # Create A* path grid
         self.astar_path_grid = create_astar_grid(full_astar_path_latlon, grid_params)
@@ -658,6 +685,9 @@ class MarineEnv:
         # A* path tracking is no longer needed as we use the grid
         # self.current_astar_path_idx = 0
 
+        self.total_distance_segment = 0.0 # Reset distance for new segment
+        self.total_time_segment = 0.0     # Reset time for new segment
+
         print(f"DEBUG: Resetting episode. Starting position: {self.current_position_latlon}, Target landmark index: {self.current_landmark_idx}")
 
         return self._get_state()
@@ -724,6 +754,22 @@ class MarineEnv:
             prev_distance_to_target = geodesic(prev_position, current_target).km
         else:
             prev_distance_to_target = 0.0
+
+        # Initialize reward_info at the beginning of the step function
+        reward_info = {
+            'prev_position': prev_position,
+            'prev_distance': prev_distance_to_target,
+            'new_distance': 0.0, # Will be updated later
+            'prev_landmark_idx': prev_landmark_idx,
+            'rerouted_path': None, # Will be updated later
+            'obstacle_info': None, # Will be updated later
+            'distance_travelled': 0.0, # Will be updated later
+            'revisited_landmark': False, # Will be updated later
+            'land_collision_occurred': False, # Will be updated later
+            'out_of_bounds_occurred': False, # Will be updated later
+            'segment_distance_travelled': 0.0, # Will be updated with actual value when landmark is reached
+            'segment_time_spent': 0.0           # Will be updated with actual value when landmark is reached
+        }
         
         speed_change_normalized, heading_change_normalized = action
 
@@ -821,6 +867,8 @@ class MarineEnv:
         self.drl_path_segment.append(new_position_latlon)
         self.full_episode_drl_path.append(new_position_latlon) # Append to full episode path
         self.total_eta_hours += self.time_step_hours
+        self.total_distance_segment += distance_travelled_km # Accumulate distance for current segment
+        self.total_time_segment += self.time_step_hours     # Accumulate time for current segment
 
         # A* path tracking is no longer needed as we use the grid
         # if self.current_astar_path_idx < len(self.full_astar_path_latlon):
@@ -867,6 +915,22 @@ class MarineEnv:
             self.drl_path_segment = [self.current_position_latlon]
             self.rerouted_paths_history = []
             
+            # Calculate optimal distance and time for the segment just completed
+            # This would ideally come from an A* path between the *previous* landmark and the *current* landmark
+            # Get the previous landmark index (start of the completed segment)
+            # and the current landmark index (end of the completed segment)
+            # Capture current segment metrics BEFORE resetting them
+            current_segment_distance_at_landmark = self.total_distance_segment
+            current_segment_time_at_landmark = self.total_time_segment
+
+            # Update reward_info with segment metrics
+            reward_info['segment_distance_travelled'] = current_segment_distance_at_landmark
+            reward_info['segment_time_spent'] = current_segment_time_at_landmark
+
+            # Reset segment tracking for the new segment
+            self.total_distance_segment = 0.0
+            self.total_time_segment = 0.0
+            
             # Reset min_distance_to_target_achieved for the new target landmark
             if self.current_landmark_idx < len(self.landmark_points):
                 self.min_distance_to_target_achieved = geodesic(self.current_position_latlon, self.landmark_points[self.current_landmark_idx]).km
@@ -879,23 +943,17 @@ class MarineEnv:
                 revisited_landmark = True
                 print(f"  ⚠️ Revisiting landmark {self.current_landmark_idx}!")
 
+        # Update other reward_info fields that are not dependent on landmark reach
+        reward_info['new_distance'] = new_distance_to_target
+        reward_info['rerouted_path'] = rerouted_path_latlon
+        reward_info['obstacle_info'] = obstacle_info
+        reward_info['distance_travelled'] = distance_travelled_km
+        reward_info['revisited_landmark'] = revisited_landmark
+        reward_info['land_collision_occurred'] = is_on_land
+        reward_info['out_of_bounds_occurred'] = out_of_bounds_occurred
 
         done = (self.current_landmark_idx >= len(self.landmark_points) or 
                 self.vessel["fuel_tank_remaining_t"] <= 0)
-
-        # PASS ALL NECESSARY INFO TO REWARD CALCULATION
-        reward_info = {
-            'prev_position': prev_position,
-            'prev_distance': prev_distance_to_target,
-            'new_distance': new_distance_to_target,
-            'prev_landmark_idx': prev_landmark_idx,
-            'rerouted_path': rerouted_path_latlon,
-            'obstacle_info': obstacle_info,
-            'distance_travelled': distance_travelled_km,
-            'revisited_landmark': revisited_landmark, # Add this flag
-            'land_collision_occurred': is_on_land, # Pass land collision status
-            'out_of_bounds_occurred': out_of_bounds_occurred # Pass out of bounds status
-        }
         
         reward_breakdown = self._calculate_reward(reward_info, episode) # Pass current episode
         total_reward = reward_breakdown['total_reward']
@@ -1001,7 +1059,9 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             'revisit_landmark_penalty': 0.0, 'speed_efficiency_penalty': 0.0,
             'too_slow_penalty': 0.0, 'circular_motion_penalty': 0.0,
             'excessive_turning_penalty': 0.0, 'land_collision_penalty': 0.0,
-            'out_of_bounds_penalty': 0.0, 'astar_path_following_reward': 0.0, 'total_reward': 0.0
+            'out_of_bounds_penalty': 0.0, 'astar_path_following_reward': 0.0,
+            'segment_distance_efficiency_reward': 0.0, 'segment_time_efficiency_reward': 0.0,
+            'total_reward': 0.0
         }
 
         max_steps = 80  # INCREASED from 50
