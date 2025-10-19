@@ -487,6 +487,10 @@ class MarineEnv:
 
         self.min_lat, self.min_lon, self.lat_step, self.lon_step, self.num_lat_cells, self.num_lon_cells = grid_params
 
+        # Initialize a dynamic grid for D* Lite to account for temporary obstacles
+        self.dynamic_bathymetry_maze = [row[:] for row in bathymetry_maze] # Deep copy
+        self.active_obstacles = [] # List to store (grid_x, grid_y) of active obstacles
+
         # CRITICAL: Define these BEFORE reset() is called
         # State: [lat, lon, speed, heading, target_lat, target_lon, 
         #         wave_h, wave_p, wave_d, wind_wave_h, wind_wave_p, wind_wave_d, fuel, distance,
@@ -643,6 +647,8 @@ class MarineEnv:
             self.position_history = []
             self.heading_history = []
             self.visited_landmarks.clear()
+            self.active_obstacles = [] # Clear active obstacles
+            self.dynamic_bathymetry_maze = [row[:] for row in self.bathymetry_maze] # Reset dynamic grid
             return self._normalize_state(np.zeros(self.state_dim, dtype=np.float32)) # Return a dummy normalized state
 
         self.current_position_latlon = self.landmark_points[0]
@@ -675,6 +681,8 @@ class MarineEnv:
         self.visited_landmarks.add(0) # Add the starting landmark (index 0)
         self.bonus_received_landmarks = set() # Initialize set to track landmarks for which bonus has been received
         self.bonus_received_landmarks.add(0) # Bonus for starting landmark is implicitly received
+        self.active_obstacles = [] # Clear active obstacles
+        self.dynamic_bathymetry_maze = [row[:] for row in self.bathymetry_maze] # Reset dynamic grid
         
         # Initialize min_distance_to_target_achieved for the current target landmark
         if self.current_landmark_idx < len(self.landmark_points):
@@ -814,10 +822,16 @@ class MarineEnv:
             new_position_latlon = prev_position # Revert position
             # Removed: done = True # End episode on out of bounds
 
-        # OBSTACLE HANDLING (keep your existing code)
+        # OBSTACLE HANDLING
         rerouted_path_latlon = None
-        obstacle_info = None
-        
+        obstacle_info = None # Keep for reward info, but not for D* Lite grid update
+
+        # Clear previous dynamic obstacles from the grid before adding new ones
+        for ox, oy in self.active_obstacles:
+            if 0 <= ox < self.num_lat_cells and 0 <= oy < self.num_lon_cells:
+                self.dynamic_bathymetry_maze[ox][oy] = self.bathymetry_maze[ox][oy] # Revert to original bathymetry
+        self.active_obstacles = [] # Clear the list
+
         if obstacle_present:
             obstacle_info = self._generate_obstacle()
             obstacle_size_km = obstacle_info['size_km']
@@ -832,32 +846,35 @@ class MarineEnv:
                         obstacle_info['center'][0], obstacle_info['center'][1],
                         *self.grid_params
                     )
-                    
+                    ox, oy = int(obstacle_grid_coords[0]), int(obstacle_grid_coords[1])
+
+                    # Mark obstacle on the dynamic grid
+                    if 0 <= ox < self.num_lat_cells and 0 <= oy < self.num_lon_cells:
+                        self.dynamic_bathymetry_maze[ox][oy] = 1 # Mark as obstacle
+                        self.active_obstacles.append((ox, oy)) # Add to active obstacles list
+                    else:
+                        print(f"D* Lite: Obstacle coordinates {obstacle_grid_coords} are out of grid bounds, cannot mark.")
+
                     # Define the current target landmark
                     if self.current_landmark_idx < len(self.landmark_points):
                         current_target_landmark = self.landmark_points[self.current_landmark_idx]
                     else:
                         current_target_landmark = self.landmark_points[-1] # Fallback to last landmark
 
-                    # Call D* Lite to find a rerouted path
+                    # Call D* Lite to find a rerouted path using the dynamic grid
                     rerouted_path_latlon = find_d_star_lite_route(
-                        self.bathymetry_maze,
+                        self.dynamic_bathymetry_maze, # Use dynamic grid
                         self.current_position_latlon,
                         current_target_landmark,
                         *self.grid_params,
-                        weather_penalty_grid=self.weather_penalty_grid,
-                        obstacle_coords=obstacle_grid_coords
+                        weather_penalty_grid=self.weather_penalty_grid
+                        # Removed obstacle_coords parameter
                     )
                     
                     if rerouted_path_latlon:
                         print(f"  D* Lite found a reroute with {len(rerouted_path_latlon)} points.")
-                        # The DRL agent will then follow this rerouted path.
-                        # For now, we just log it and let the DRL agent continue.
-                        # A more advanced implementation would update the DRL agent's target or path.
                     else:
                         print("  D* Lite failed to find a reroute.")
-        # ... your D* Lite code ...
-                    pass
 
         # If a land collision or out of bounds occurred, the position has already been reverted.
         # The episode will not terminate immediately, but a penalty will be applied.
@@ -1194,7 +1211,7 @@ if __name__ == "__main__":
     
     trained_agent, episode_rewards = train_ddpg_agent(
         env, agent, replay_buffer, 
-        num_episodes=1200,  # Keep 500 episodes for now
+        num_episodes=800,  # Keep 500 episodes for now
         batch_size=64,     # Keep 64 batch size for now
         visualize_every_n_episodes=20,
         full_astar_path_latlon=full_astar_path_latlon,

@@ -141,18 +141,8 @@ def find_d_star_lite_route(grid, start_latlon, end_latlon, min_lat, min_lon, lat
     d_star.compute_shortest_path()
     path_grid = d_star.find_path()
 
-    if obstacle_coords:
-        print(f"D* Lite: Simulating obstacle at {obstacle_coords}")
-        ox, oy = obstacle_coords
-        if 0 <= ox < d_star.rows and 0 <= oy < d_star.cols:
-            original_cost = d_star.grid[ox][oy]
-            d_star.grid[ox][oy] = 1 # Mark as obstacle
-            changed_cells = [(ox, oy)]
-            d_star.rescan(changed_cells)
-            path_grid = d_star.find_path()
-            d_star.grid[ox][oy] = original_cost # Revert for future calls if needed
-        else:
-            print(f"D* Lite: Obstacle coordinates {obstacle_coords} are out of grid bounds.")
+    # The grid passed to D* Lite should already contain any active obstacles.
+    # No need to simulate or revert obstacles here.
 
     if path_grid:
         path_latlon = [grid_coords_to_lat_lon(r, c, min_lat, min_lon, lat_step, lon_step) for r, c in path_grid]
