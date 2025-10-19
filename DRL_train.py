@@ -279,23 +279,29 @@ class MarineEnv:
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
         # ============================================================================
-        progress = prev_distance - new_distance  # Positive = moving closer
+        progress_towards_new_record = self.min_distance_to_target_achieved - new_distance
         
-        if progress > 2:
-            base_reward = progress / 2 * 4.0
-            efficiency = min(1.0, progress / max(distance_travelled, 0.1))
+        if progress_towards_new_record > 0.5: # Only reward if significantly closer than the best record
+            base_reward = progress_towards_new_record * 6.0 # Stronger reward for breaking record
+            efficiency = min(1.0, progress_towards_new_record / max(distance_travelled, 0.1))
             if efficiency > 0.8:
-                base_reward *= 1.3
+                base_reward *= 1.5
             reward_breakdown['progress_reward'] = base_reward
+        elif new_distance < self.min_distance_to_target_achieved: # Small bonus for minor improvement
+            reward_breakdown['progress_reward'] = 1.0
         else:
-            regression_penalty = abs(progress) * 7.5
-            reward_breakdown['regression_penalty'] = -regression_penalty
+            # Penalize if not making progress towards a new record or moving away
+            regression_penalty = (new_distance - self.min_distance_to_target_achieved) * 5.0
+            if regression_penalty > 0:
+                reward_breakdown['regression_penalty'] = -regression_penalty
+            elif new_distance >= prev_distance: # Penalize for not moving closer than previous step
+                reward_breakdown['regression_penalty'] = -1.5 # Small penalty for stagnation
         
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         if new_distance < 10:
-            proximity_bonus = (10 - new_distance) * 25.0
+            proximity_bonus = (10 - new_distance) * 35.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         distance_penalty = new_distance * 0.10
@@ -653,6 +659,12 @@ class MarineEnv:
         self.bonus_received_landmarks = set() # Initialize set to track landmarks for which bonus has been received
         self.bonus_received_landmarks.add(0) # Bonus for starting landmark is implicitly received
         
+        # Initialize min_distance_to_target_achieved for the current target landmark
+        if self.current_landmark_idx < len(self.landmark_points):
+            self.min_distance_to_target_achieved = geodesic(self.current_position_latlon, self.landmark_points[self.current_landmark_idx]).km
+        else:
+            self.min_distance_to_target_achieved = float('inf')
+        
         # A* path tracking is no longer needed as we use the grid
         # self.current_astar_path_idx = 0
 
@@ -820,9 +832,13 @@ class MarineEnv:
         else:
             new_distance_to_target = 0.0
 
+        # Update min_distance_to_target_achieved
+        if new_distance_to_target < self.min_distance_to_target_achieved:
+            self.min_distance_to_target_achieved = new_distance_to_target
+
         # Check if landmark reached
         revisited_landmark = False
-        if new_distance_to_target < 8:
+        if new_distance_to_target < 5:
             # Before incrementing, add the *current* landmark (which is now reached) to visited
             if self.current_landmark_idx < len(self.landmark_points):
                 self.visited_landmarks.add(self.current_landmark_idx)
@@ -831,6 +847,12 @@ class MarineEnv:
             print(f"Reached landmark {self.current_landmark_idx}/{len(self.landmark_points)}")
             self.drl_path_segment = [self.current_position_latlon]
             self.rerouted_paths_history = []
+            
+            # Reset min_distance_to_target_achieved for the new target landmark
+            if self.current_landmark_idx < len(self.landmark_points):
+                self.min_distance_to_target_achieved = geodesic(self.current_position_latlon, self.landmark_points[self.current_landmark_idx]).km
+            else:
+                self.min_distance_to_target_achieved = float('inf') # No more landmarks
 
             # After incrementing, check if the *new* target landmark has been visited before
             if self.current_landmark_idx < len(self.landmark_points) and \
@@ -1059,7 +1081,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
 if __name__ == "__main__":
     full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid = \
         generate_optimized_route_and_landmarks(vessel, num_sample_ports=3, random_state=50, 
-                                               cell_size_m=10000, landmark_interval_km=120)
+                                               cell_size_m=10000, landmark_interval_km=100)
 
     if full_astar_path_latlon is None:
         print("Failed to generate optimized route and landmarks. Exiting.")
