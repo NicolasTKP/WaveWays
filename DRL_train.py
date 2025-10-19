@@ -168,6 +168,9 @@ class MarineEnv:
 
         # Normalize distance to A* path grid (typical max distance)
         normalized[14] = state[14] / 200.0  # Clamp to [0, 1]
+
+        # Normalize bearing to A* path [0, 360] to [-1, 1]
+        normalized[15] = (state[15] / 180.0) - 1.0
         
         return normalized
 
@@ -203,8 +206,11 @@ class MarineEnv:
             self.landmark_points[self.current_landmark_idx]
         ).km
 
-        # Calculate minimum distance to A* path grid
-        min_dist_to_astar_path_grid = self._get_min_distance_to_astar_path_grid(current_lat, current_lon)
+        # Calculate minimum distance and closest point to A* path grid
+        min_dist_to_astar_path_grid, closest_astar_point = self._get_min_distance_to_astar_path_grid(current_lat, current_lon)
+        
+        # Calculate bearing to the closest A* path point
+        bearing_to_astar_path = self._calculate_bearing(self.current_position_latlon, closest_astar_point)
 
         state = np.array([
             current_lat, current_lon,
@@ -214,7 +220,8 @@ class MarineEnv:
             sea_currents["wind_wave_height"], sea_currents["wind_wave_period"], sea_currents["wind_wave_direction"],
             self.vessel["fuel_tank_remaining_t"],
             distance_to_target_landmark,
-            min_dist_to_astar_path_grid # New state variable
+            min_dist_to_astar_path_grid, # New state variable
+            bearing_to_astar_path # New state variable: bearing to closest A* path point
         ], dtype=np.float32)
         
         # NORMALIZE before returning
@@ -275,13 +282,13 @@ class MarineEnv:
         progress = prev_distance - new_distance  # Positive = moving closer
         
         if progress > 2:
-            base_reward = progress / 2 * 11.0
+            base_reward = progress / 2 * 4.0
             efficiency = min(1.0, progress / max(distance_travelled, 0.1))
             if efficiency > 0.8:
                 base_reward *= 1.3
             reward_breakdown['progress_reward'] = base_reward
         else:
-            regression_penalty = abs(progress) * 15.0
+            regression_penalty = abs(progress) * 7.5
             reward_breakdown['regression_penalty'] = -regression_penalty
         
         # ============================================================================
@@ -291,7 +298,7 @@ class MarineEnv:
             proximity_bonus = (10 - new_distance) * 25.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.15
+        distance_penalty = new_distance * 0.10
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -430,13 +437,13 @@ class MarineEnv:
         # 10. A* PATH FOLLOWING REWARD (GUIDANCE)
         # ============================================================================
         astar_following_reward = 0.0
-        if min_dist_to_astar_path_grid < 50: # Only reward/penalize if relatively close to A* path
+        if min_dist_to_astar_path_grid < 60: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (50 - min_dist_to_astar_path_grid) * 1 # Max 25 reward if on path
+            astar_proximity_reward = (60 - min_dist_to_astar_path_grid) * 0.5 # Max 25 reward if on path
             astar_following_reward += astar_proximity_reward
         else:
             # Penalty for being too far from the A* path
-            astar_following_reward -= (min_dist_to_astar_path_grid - 50) * 0.5 # Penalty increases with distance
+            astar_following_reward -= (min_dist_to_astar_path_grid - 50) * 0.25 # Penalty increases with distance
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
@@ -462,8 +469,8 @@ class MarineEnv:
         # CRITICAL: Define these BEFORE reset() is called
         # State: [lat, lon, speed, heading, target_lat, target_lon, 
         #         wave_h, wave_p, wave_d, wind_wave_h, wind_wave_p, wind_wave_d, fuel, distance,
-        #         min_dist_to_astar_path_grid]
-        self.state_dim = 15 # Reduced state dimension
+        #         min_dist_to_astar_path_grid, bearing_to_astar_path]
+        self.state_dim = 16 # Increased state dimension by 1
         self.action_dim = 2
         self.max_speed_knots = self.vessel["speed_knots"]
         self.max_heading_change_deg = 30
@@ -569,53 +576,31 @@ class MarineEnv:
         to any 'on-path' cell in the astar_path_grid.
         """
         if self.astar_path_kdtree is None or not self.astar_path_latlon_points:
-            return 200.0 # Return max distance if no path or KDTree
+            return 200.0, (current_lat, current_lon) # Return max distance and current position as dummy
 
-        # Use query_ball_point to find all A* path points within a certain radius (Euclidean distance)
-        # The radius needs to be in the same units as the KDTree points (degrees lat/lon).
-        # Approximate conversion from km to degrees for the current region.
-        # Assuming 1 degree lat ~ 111 km, 1 degree lon ~ 111 * cos(avg_lat) km
-        
-        # A more robust way to handle radius in KDTree for lat/lon is to convert lat/lon to a 3D Cartesian coordinate system,
-        # but for simplicity and given the relatively small region, a degree approximation is often used.
-        # Let's use a simple approximation for the radius in degrees.
-        
-        # Average latitude for the region (can be approximated or taken from grid_params)
         avg_lat_rad = radians((self.min_lat + self.num_lat_cells * self.lat_step) / 2)
-        
-        # Approximate degrees per km
         deg_per_km_lat = 1 / 111.0
-        deg_per_km_lon = 1 / (111.0 * cos(avg_lat_rad))
-        
-        # Convert proximity_threshold_km to degrees
-        radius_deg_lat = self.astar_proximity_threshold_km * deg_per_km_lat
-        radius_deg_lon = self.astar_proximity_threshold_km * deg_per_km_lon
-        
-        # Use the larger of the two to ensure coverage, or a combined metric
-        # For simplicity, let's use the latitudinal degree equivalent as a general radius.
-        radius_deg = radius_deg_lat # This is a rough approximation for the search radius in degrees
+        radius_deg = self.astar_proximity_threshold_km * deg_per_km_lat
 
-        # Find indices of all points within the approximate radius
         indices_in_range = self.astar_path_kdtree.query_ball_point(
             (current_lat, current_lon), 
             r=radius_deg
         )
         
-        min_geodesic_dist = 200.0 # Default to max distance if no points found in range
+        min_geodesic_dist = 200.0
+        closest_astar_point = (current_lat, current_lon) # Default to current position
 
         if indices_in_range:
-            # If points are found within the Euclidean radius, calculate their actual geodesic distances
-            # and find the minimum among them.
             geodesic_distances = []
             for idx in indices_in_range:
                 path_lat, path_lon = self.astar_path_latlon_points[idx]
                 dist = geodesic((current_lat, current_lon), (path_lat, path_lon)).km
-                geodesic_distances.append(dist)
+                geodesic_distances.append((dist, (path_lat, path_lon)))
             
-            min_geodesic_dist = min(geodesic_distances)
+            if geodesic_distances:
+                min_geodesic_dist, closest_astar_point = min(geodesic_distances, key=lambda x: x[0])
         
-        return min_geodesic_dist
-
+        return min_geodesic_dist, closest_astar_point
     def reset(self):
         """Enhanced reset with all tracking variables properly initialized and robust landmark handling"""
         if not self.landmark_points:
