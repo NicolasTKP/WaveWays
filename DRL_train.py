@@ -279,32 +279,22 @@ class MarineEnv:
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
         # ============================================================================
-        progress_towards_new_record = self.min_distance_to_target_achieved - new_distance
-        
-        if progress_towards_new_record > 0.5: # Only reward if significantly closer than the best record
-            base_reward = progress_towards_new_record * 6.0 # Stronger reward for breaking record
-            efficiency = min(1.0, progress_towards_new_record / max(distance_travelled, 0.1))
-            if efficiency > 0.8:
-                base_reward *= 1.5
-            reward_breakdown['progress_reward'] = base_reward
-        elif new_distance < self.min_distance_to_target_achieved: # Small bonus for minor improvement
-            reward_breakdown['progress_reward'] = 1.0
+        distance_change = prev_distance - new_distance
+        if distance_change > 0:
+            # Reward getting closer (even if not breaking record)
+            reward_breakdown['progress_reward'] = distance_change * 7.5
         else:
-            # Penalize if not making progress towards a new record or moving away
-            regression_penalty = (new_distance - self.min_distance_to_target_achieved) * 5.0
-            if regression_penalty > 0:
-                reward_breakdown['regression_penalty'] = -regression_penalty
-            elif new_distance >= prev_distance: # Penalize for not moving closer than previous step
-                reward_breakdown['regression_penalty'] = -1.5 # Small penalty for stagnation
-        
+            # Small penalty for moving away (allow detours)
+            reward_breakdown['regression_penalty'] = distance_change * 10.0
+    
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        if new_distance < 10:
-            proximity_bonus = (10 - new_distance) * 35.0
+        if new_distance < 15:
+            proximity_bonus = (15 - new_distance) * 25.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.10
+        distance_penalty = new_distance * 0.20
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -373,8 +363,8 @@ class MarineEnv:
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 600.0
-            scaled_penalty = base_penalty * max(1, episode / 300) # Increase penalty by 1% per episode
+            base_penalty = 300.0
+            scaled_penalty = base_penalty  # Increase penalty per episode * max(1, episode / 300)
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
         if out_of_bounds_occurred:
@@ -412,8 +402,8 @@ class MarineEnv:
                 lat_range_km = lat_range * 111.0
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
-                if lat_range_km < 15 and lon_range_km < 15:
-                    circular_penalty = 1000.0
+                if lat_range_km < 10 and lon_range_km < 10:
+                    circular_penalty = 150.0
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -443,13 +433,13 @@ class MarineEnv:
         # 10. A* PATH FOLLOWING REWARD (GUIDANCE)
         # ============================================================================
         astar_following_reward = 0.0
-        if min_dist_to_astar_path_grid < 60: # Only reward/penalize if relatively close to A* path
+        if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (60 - min_dist_to_astar_path_grid) * 0.5 # Max 25 reward if on path
+            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 2.5 # Max 25 reward if on path
             astar_following_reward += astar_proximity_reward
         else:
             # Penalty for being too far from the A* path
-            astar_following_reward -= (min_dist_to_astar_path_grid - 50) * 0.25 # Penalty increases with distance
+            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.25 # Penalty increases with distance
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
@@ -791,6 +781,35 @@ class MarineEnv:
                 
                 if obstacle_size_km > 3.0:
                     print(f"Large obstacle ({obstacle_size_km:.2f} km) - Using D* Lite rerouting")
+                    # Convert obstacle center to grid coordinates for D* Lite
+                    obstacle_grid_coords = lat_lon_to_grid_coords(
+                        obstacle_info['center'][0], obstacle_info['center'][1],
+                        *self.grid_params
+                    )
+                    
+                    # Define the current target landmark
+                    if self.current_landmark_idx < len(self.landmark_points):
+                        current_target_landmark = self.landmark_points[self.current_landmark_idx]
+                    else:
+                        current_target_landmark = self.landmark_points[-1] # Fallback to last landmark
+
+                    # Call D* Lite to find a rerouted path
+                    rerouted_path_latlon = find_d_star_lite_route(
+                        self.bathymetry_maze,
+                        self.current_position_latlon,
+                        current_target_landmark,
+                        *self.grid_params,
+                        weather_penalty_grid=self.weather_penalty_grid,
+                        obstacle_coords=obstacle_grid_coords
+                    )
+                    
+                    if rerouted_path_latlon:
+                        print(f"  D* Lite found a reroute with {len(rerouted_path_latlon)} points.")
+                        # The DRL agent will then follow this rerouted path.
+                        # For now, we just log it and let the DRL agent continue.
+                        # A more advanced implementation would update the DRL agent's target or path.
+                    else:
+                        print("  D* Lite failed to find a reroute.")
         # ... your D* Lite code ...
                     pass
 
