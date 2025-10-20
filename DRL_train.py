@@ -281,14 +281,25 @@ class MarineEnv:
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
         # ============================================================================
-        distance_change = prev_distance - new_distance
-        if distance_change > 0:
-            # Reward getting closer (even if not breaking record)
-            reward_breakdown['progress_reward'] = distance_change * 6.0
+        progress_towards_new_record = self.min_distance_to_target_achieved - new_distance
+
+        if progress_towards_new_record > 0.5: # Only reward if significantly closer than the best record
+            base_reward = progress_towards_new_record * 8.0 # Stronger reward for breaking record
+            efficiency = min(1.0, progress_towards_new_record / max(distance_travelled, 0.1))
+            if efficiency > 0.8:
+                base_reward *= 1.5
+            reward_breakdown['progress_reward'] = base_reward
+        elif new_distance < self.min_distance_to_target_achieved: # Small bonus for minor improvement
+            reward_breakdown['progress_reward'] = 1.1
         else:
-            # Small penalty for moving away (allow detours)
-            reward_breakdown['regression_penalty'] = distance_change * 6.0
-    
+            # Penalize if not making progress towards a new record or moving away
+            regression_penalty = (new_distance - self.min_distance_to_target_achieved) * 1.0
+            if regression_penalty > 0:
+                reward_breakdown['regression_penalty'] = -regression_penalty
+            elif new_distance >= prev_distance: # Penalize for not moving closer than previous step
+                reward_breakdown['regression_penalty'] = -0.1 # Small penalty for stagnation
+                
+        print(reward_breakdown['progress_reward'])
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
@@ -362,7 +373,7 @@ class MarineEnv:
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 500.0
+            base_penalty = 400.0
             scaled_penalty = base_penalty * max(1,round(episode / 800, 0))  # Increase penalty per episode * max(1, episode / 300)
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
