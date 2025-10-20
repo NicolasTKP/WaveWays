@@ -284,16 +284,16 @@ class MarineEnv:
         distance_change = prev_distance - new_distance
         if distance_change > 0:
             # Reward getting closer (even if not breaking record)
-            reward_breakdown['progress_reward'] = distance_change * 9.0
+            reward_breakdown['progress_reward'] = distance_change * 6.0
         else:
             # Small penalty for moving away (allow detours)
-            reward_breakdown['regression_penalty'] = distance_change * 10.0
+            reward_breakdown['regression_penalty'] = distance_change * 6.0
     
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         if new_distance < 15:
-            proximity_bonus = (15 - new_distance) * 20.0
+            proximity_bonus = (15 - new_distance) * 10.0
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         distance_penalty = new_distance * 0.20
@@ -309,7 +309,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 13 # heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 11 # heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -317,7 +317,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             # Base reward for reaching any landmark
-            landmark_bonus = 1800.0
+            landmark_bonus = 2000.0
             reward_breakdown['landmark_bonus'] = landmark_bonus
             print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points")
 
@@ -362,8 +362,8 @@ class MarineEnv:
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 300.0
-            scaled_penalty = base_penalty  # Increase penalty per episode * max(1, episode / 300)
+            base_penalty = 500.0
+            scaled_penalty = base_penalty * max(1,round(episode / 800, 0))  # Increase penalty per episode * max(1, episode / 300)
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
         if out_of_bounds_occurred:
@@ -401,8 +401,8 @@ class MarineEnv:
                 lat_range_km = lat_range * 111.0
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
-                if lat_range_km < 10 and lon_range_km < 10:
-                    circular_penalty = 150.0
+                if lat_range_km < 7 and lon_range_km < 7:
+                    circular_penalty = 300.0
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -434,11 +434,11 @@ class MarineEnv:
         astar_following_reward = 0.0
         if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 3.0 # Max 25 reward if on path
+            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 5.5 # Max 25 reward if on path
             astar_following_reward += astar_proximity_reward
-        else:
+        elif min_dist_to_astar_path_grid > 11:
             # Penalty for being too far from the A* path
-            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.15 # Penalty increases with distance
+            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.25 # Penalty increases with distance
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
@@ -452,19 +452,14 @@ class MarineEnv:
         if self.current_landmark_idx > prev_landmark_idx:
             epsilon = 1e-6 # To prevent division by zero
 
-            # Distance efficiency reward: inversely proportional to distance travelled
-            # Shorter distance -> higher reward. Max reward for very short distance, approaches 0 for very long.
-            # Ensure a base reward is always given, then scale based on efficiency.
-            base_distance_reward = 200.0 # Base reward for completing the segment distance
-            distance_efficiency_bonus = max(0.0, 10000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
+
+            base_distance_reward = 150.0 # Base reward for completing the segment distance
+            distance_efficiency_bonus = max(0.0, 18000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
             reward_breakdown['segment_distance_efficiency_reward'] = base_distance_reward + distance_efficiency_bonus
             print(f"  📏 Distance Efficiency Reward: {reward_breakdown['segment_distance_efficiency_reward']:.2f} (Travelled: {segment_distance_travelled:.1f}km)")
 
-            # Time efficiency reward: inversely proportional to time spent
-            # Shorter time -> higher reward. Max reward for very short time, approaches 0 for very long.
-            # Ensure a base reward is always given, then scale based on efficiency.
-            base_time_reward = 200.0 # Base reward for completing the segment time
-            time_efficiency_bonus = max(0.0, 500.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
+            base_time_reward = 100.0 # Base reward for completing the segment time
+            time_efficiency_bonus = max(0.0, 2000.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
             reward_breakdown['segment_time_efficiency_reward'] = base_time_reward + time_efficiency_bonus
             print(f"  ⏱️ Time Efficiency Reward: {reward_breakdown['segment_time_efficiency_reward']:.2f} (Spent: {segment_time_spent:.1f}h)")
 
@@ -1084,9 +1079,9 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         max_steps = 80  # INCREASED from 50
         
         # Curriculum: Adjust difficulty
-        if episode > 100:
+        if episode > 450:
             env.time_step_hours = 2.5
-        if episode > 200:
+        if episode > 800:
             env.time_step_hours = 2
         
         while not done and step_count < max_steps:
@@ -1211,7 +1206,7 @@ if __name__ == "__main__":
     
     trained_agent, episode_rewards = train_ddpg_agent(
         env, agent, replay_buffer, 
-        num_episodes=800,  # Keep 500 episodes for now
+        num_episodes=1000,  # Keep 500 episodes for now
         batch_size=64,     # Keep 64 batch size for now
         visualize_every_n_episodes=20,
         full_astar_path_latlon=full_astar_path_latlon,
