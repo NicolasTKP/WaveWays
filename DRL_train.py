@@ -277,37 +277,45 @@ class MarineEnv:
         # Extract A* path info from the current state (last element)
         current_state = self._get_state() # Get the current (normalized) state
         min_dist_to_astar_path_grid = current_state[14] * 200.0 # Denormalize
+        current_lat, current_lon = self.current_position_latlon
 
+        # Get current weather penalty for dynamic avoidance
+        # Get current weather penalty for dynamic avoidance
+        # First, get the weather data for the current point
+        weather_data_for_current_point, _ = get_weather_for_point(current_lat, current_lon)
+        
+        # Then, calculate the penalty using the weather data
+        current_weather_penalty_value = get_weather_penalty(weather_data_for_current_point)
+        
         # ============================================================================
         # 1. PROGRESS REWARD (PRIMARY SIGNAL)
         # ============================================================================
-        progress_towards_new_record = self.min_distance_to_target_achieved - new_distance
-
-        if progress_towards_new_record > 0.5: # Only reward if significantly closer than the best record
-            base_reward = progress_towards_new_record * 8.0 # Stronger reward for breaking record
-            efficiency = min(1.0, progress_towards_new_record / max(distance_travelled, 0.1))
-            if efficiency > 0.8:
-                base_reward *= 1.5
-            reward_breakdown['progress_reward'] = base_reward
-        elif new_distance < self.min_distance_to_target_achieved: # Small bonus for minor improvement
-            reward_breakdown['progress_reward'] = 1.1
+        distance_reduction = prev_distance - new_distance
+        
+        if distance_reduction > 0:
+            # Reward for moving closer to the target landmark
+            reward_breakdown['progress_reward'] = distance_reduction * 5.0 # Significantly increased reward for progress
+            
+            # Additional bonus if breaking the minimum distance record
+            if new_distance < self.min_distance_to_target_achieved:
+                reward_breakdown['progress_reward'] += (self.min_distance_to_target_achieved - new_distance) * 5.0
+                self.min_distance_to_target_achieved = new_distance # Update the record
         else:
-            # Penalize if not making progress towards a new record or moving away
-            regression_penalty = (new_distance - self.min_distance_to_target_achieved) * 1.0
-            if regression_penalty > 0:
-                reward_breakdown['regression_penalty'] = -regression_penalty
-            elif new_distance >= prev_distance: # Penalize for not moving closer than previous step
-                reward_breakdown['regression_penalty'] = -0.1 # Small penalty for stagnation
-                
-        print(reward_breakdown['progress_reward'])
+            # Penalize for moving away or staying still
+            reward_breakdown['regression_penalty'] = distance_reduction * 5.0 # Penalty for moving away
+            if distance_reduction == 0 and new_distance > 5: # Small penalty for stagnation if not at target
+                reward_breakdown['regression_penalty'] -= 1.0
+
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
-        if new_distance < 15:
-            proximity_bonus = (15 - new_distance) * 10.0
+        # Proximity bonus: stronger as agent gets closer
+        if new_distance < 50: # Increased range for proximity bonus
+            proximity_bonus = (50 - new_distance) * 5.0 # Adjusted multiplier
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
-        distance_penalty = new_distance * 0.20
+        # Distance penalty: penalize based on absolute distance, but less aggressively
+        distance_penalty = new_distance * 0.05 # Reduced distance penalty
         reward_breakdown['distance_penalty'] = -distance_penalty
         
         # ============================================================================
@@ -320,7 +328,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 11 # heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 15 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -328,7 +336,7 @@ class MarineEnv:
         # ============================================================================
         if self.current_landmark_idx > prev_landmark_idx:
             # Base reward for reaching any landmark
-            landmark_bonus = 2000.0
+            landmark_bonus = 2000.0 # Slightly increased landmark bonus
             reward_breakdown['landmark_bonus'] = landmark_bonus
             print(f"  🎯 LANDMARK REACHED! +{landmark_bonus} points")
 
@@ -336,16 +344,16 @@ class MarineEnv:
         # 5. MOVEMENT REQUIREMENT (PREVENT STAYING STILL)
         # ============================================================================
         if distance_travelled < 3.0:
-            stuck_penalty = (3.0 - distance_travelled) * 80.0
+            stuck_penalty = (3.0 - distance_travelled) * 100.0 # Increased stuck penalty
             reward_breakdown['stuck_penalty'] = -stuck_penalty
             if distance_travelled < 1.0:
                 print(f"  🐌 BARELY MOVING: -{stuck_penalty:.1f} (only {distance_travelled:.1f}km)")
         
         # ============================================================================
-        # 6. OPERATIONAL COSTS (MINIMAL)
+        # 6. OPERATIONAL COSTS (FUEL & EMISSIONS)
         # ============================================================================
-        fuel_cost_penalty = self.total_fuel_consumed * 0.002
-        emissions_penalty = self.total_emissions * 0.005
+        fuel_cost_penalty = self.total_fuel_consumed * 0.005 # Increased fuel penalty
+        emissions_penalty = self.total_emissions * 0.01 # Increased emissions penalty
         reward_breakdown['fuel_cost_penalty'] = -fuel_cost_penalty
         reward_breakdown['emissions_penalty'] = -emissions_penalty
         
@@ -354,42 +362,43 @@ class MarineEnv:
         # ============================================================================
         
         if self.vessel["fuel_tank_remaining_t"] <= 0:
-            reward_breakdown['fuel_exhaustion_penalty'] = -500.0
-            print(f"  ⛽ FUEL EXHAUSTED: -500")
+            reward_breakdown['fuel_exhaustion_penalty'] = -1000.0 # Increased fuel exhaustion penalty
+            print(f"  ⛽ FUEL EXHAUSTED: -1000")
         
         if obstacle_info and self._check_collision_with_obstacle(
             self.current_position_latlon, obstacle_info):
-            reward_breakdown['collision_penalty'] = -2000.0
-            print(f"  💥 COLLISION: -200")
+            reward_breakdown['collision_penalty'] = -2500.0 # Increased collision penalty
+            print(f"  💥 COLLISION: -2500")
         
         if rerouted_path:
-            reward_breakdown['rerouting_penalty'] = -50.0
+            reward_breakdown['rerouting_penalty'] = -100.0 # Increased rerouting penalty
         
         if revisited_landmark:
-            revisit_penalty = 500.0
+            revisit_penalty = 750.0 # Increased revisit penalty
             reward_breakdown['revisit_landmark_penalty'] = -revisit_penalty
             print(f"  ↩️ REVISITED LANDMARK: -{revisit_penalty}")
 
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 400.0
+            base_penalty = 500.0 # Increased base penalty
             scaled_penalty = base_penalty * max(1,round(episode / 800, 0))  # Increase penalty per episode * max(1, episode / 300)
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
         if out_of_bounds_occurred:
-            reward_breakdown['out_of_bounds_penalty'] = -1000.0 # Consistent with step()
+            reward_breakdown['out_of_bounds_penalty'] = -1500.0 # Increased out of bounds penalty
+            print(f"  ❌ OUT OF BOUNDS: -1500")
 
         # ============================================================================
         # 8. SPEED EFFICIENCY (SMALL PENALTY)
         # ============================================================================
         optimal_speed = self.max_speed_knots * 0.75
         speed_diff = abs(self.current_speed_knots - optimal_speed)
-        speed_penalty = speed_diff * 0.5
+        speed_penalty = speed_diff * 0.5 # Increased speed efficiency penalty
         reward_breakdown['speed_efficiency_penalty'] = -speed_penalty
         
         if self.current_speed_knots < self.max_speed_knots * 0.4:
-            reward_breakdown['too_slow_penalty'] = -7.0
+            reward_breakdown['too_slow_penalty'] = -8.0 # Increased too slow penalty
         
         # ============================================================================
         # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
@@ -413,7 +422,7 @@ class MarineEnv:
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
                 if lat_range_km < 7 and lon_range_km < 7:
-                    circular_penalty = 300.0
+                    circular_penalty = 400.0 # Increased circular motion penalty
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
                     
@@ -435,7 +444,7 @@ class MarineEnv:
                     total_change += diff
                 
                 if total_change > 90:
-                    zigzag_penalty = 200.0
+                    zigzag_penalty = 300.0 # Increased zigzag penalty
                     reward_breakdown['excessive_turning_penalty'] = -zigzag_penalty
                     print(f"  ↩️ EXCESSIVE TURNING: -{zigzag_penalty} ({total_change:.0f}° in 4 steps)")
         
@@ -445,16 +454,25 @@ class MarineEnv:
         astar_following_reward = 0.0
         if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 5.5 # Max 25 reward if on path
+            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 10.0 # Significantly increased A* proximity reward
             astar_following_reward += astar_proximity_reward
-        elif min_dist_to_astar_path_grid > 11:
-            # Penalty for being too far from the A* path
-            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.25 # Penalty increases with distance
+        elif min_dist_to_astar_path_grid > 10: # Penalty for being too far from the A* path
+            astar_following_reward -= (min_dist_to_astar_path_grid - 10) * 0.3 # Significantly increased penalty
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
         # ============================================================================
-        # 11. EFFICIENCY REWARDS (SEGMENT-BASED - APPLIED ONLY WHEN LANDMARK REACHED)
+        # 11. DYNAMIC WEATHER AVOIDANCE PENALTY
+        # ============================================================================
+        # The get_weather_penalty function returns a value where higher means worse weather
+        # We want to penalize the agent for being in bad weather.
+        weather_avoidance_penalty = current_weather_penalty_value * 50.0 # Scale the penalty
+        reward_breakdown['weather_avoidance_penalty'] = -weather_avoidance_penalty
+        if weather_avoidance_penalty > 0:
+            print(f"  ☁️ WEATHER PENALTY: -{weather_avoidance_penalty:.2f}")
+
+        # ============================================================================
+        # 12. EFFICIENCY REWARDS (SEGMENT-BASED - APPLIED ONLY WHEN LANDMARK REACHED)
         # ============================================================================
         segment_distance_travelled = reward_info.get('segment_distance_travelled', 0.0)
         segment_time_spent = reward_info.get('segment_time_spent', 0.0)
@@ -464,21 +482,21 @@ class MarineEnv:
             epsilon = 1e-6 # To prevent division by zero
 
 
-            base_distance_reward = 150.0 # Base reward for completing the segment distance
-            distance_efficiency_bonus = max(0.0, 18000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
+            base_distance_reward = 200.0 # Increased base reward for completing the segment distance
+            distance_efficiency_bonus = max(0.0, 20000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
             reward_breakdown['segment_distance_efficiency_reward'] = base_distance_reward + distance_efficiency_bonus
             print(f"  📏 Distance Efficiency Reward: {reward_breakdown['segment_distance_efficiency_reward']:.2f} (Travelled: {segment_distance_travelled:.1f}km)")
 
-            base_time_reward = 100.0 # Base reward for completing the segment time
-            time_efficiency_bonus = max(0.0, 2000.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
+            base_time_reward = 150.0 # Increased base reward for completing the segment time
+            time_efficiency_bonus = max(0.0, 2500.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
             reward_breakdown['segment_time_efficiency_reward'] = base_time_reward + time_efficiency_bonus
             print(f"  ⏱️ Time Efficiency Reward: {reward_breakdown['segment_time_efficiency_reward']:.2f} (Spent: {segment_time_spent:.1f}h)")
 
         # ============================================================================
-        # 12. REWARD CLIPPING (PREVENT EXTREME VALUES)
+        # 13. REWARD CLIPPING (PREVENT EXTREME VALUES)
         # ============================================================================
         total_reward = sum(reward_breakdown.values())
-        reward_breakdown['total_reward'] = np.clip(total_reward, -2500, 2500)
+        reward_breakdown['total_reward'] = np.clip(total_reward, -3000, 3000) # Adjusted clipping range
         
         return reward_breakdown
 
@@ -1046,7 +1064,7 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     plt.close(fig)
     
 def normalize_reward_linear(reward):
-    old_min, old_max = -2500, 2500
+    old_min, old_max = -3000, 3000
     new_min, new_max = -1, 1
     normalized = ((reward - old_min) / (old_max - old_min)) * (new_max - new_min) + new_min
     return np.clip(normalized, new_min, new_max)  # optional safety clip
@@ -1083,6 +1101,7 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
             'too_slow_penalty': 0.0, 'circular_motion_penalty': 0.0,
             'excessive_turning_penalty': 0.0, 'land_collision_penalty': 0.0,
             'out_of_bounds_penalty': 0.0, 'astar_path_following_reward': 0.0,
+            'weather_avoidance_penalty': 0.0, # Added this line
             'segment_distance_efficiency_reward': 0.0, 'segment_time_efficiency_reward': 0.0,
             'total_reward': 0.0
         }
