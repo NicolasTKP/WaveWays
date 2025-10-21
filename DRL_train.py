@@ -38,39 +38,82 @@ from d_star_lite import DStarLite, find_d_star_lite_route
 # 5. Reduced training: 100 episodes, 40 steps/episode, 2hr timesteps
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action):
+    def __init__(self, state_dim, action_dim, max_action, sequence_length=3, hidden_size=192): # Slightly reduced sequence_length and hidden_size for faster training
         super(Actor, self).__init__()
-        self.l1 = nn.Linear(state_dim, 256)
+        self.sequence_length = sequence_length
+        self.hidden_size = hidden_size
+        
+        self.lstm = nn.LSTM(state_dim, hidden_size, batch_first=True)
+        self.l1 = nn.Linear(hidden_size, 256)
         self.l2 = nn.Linear(256, 256)
         self.l3 = nn.Linear(256, action_dim)
         self.max_action = max_action
 
-    def forward(self, state):
-        x = torch.relu(self.l1(state))
+    def forward(self, state_sequence):
+        # state_sequence expected shape: (batch_size, sequence_length, state_dim)
+        # If input is a single state, unsqueeze to create a sequence of length 1
+        if state_sequence.dim() == 2: # (batch_size, state_dim)
+            state_sequence = state_sequence.unsqueeze(1) # -> (batch_size, 1, state_dim)
+        
+        # Ensure the sequence length matches what the LSTM expects
+        # If the input sequence is shorter than self.sequence_length, pad it
+        # This might happen during initial steps of an episode
+        if state_sequence.shape[1] < self.sequence_length:
+            padding_needed = self.sequence_length - state_sequence.shape[1]
+            padding = torch.zeros(state_sequence.shape[0], padding_needed, state_sequence.shape[2], device=state_sequence.device)
+            state_sequence = torch.cat([padding, state_sequence], dim=1)
+        elif state_sequence.shape[1] > self.sequence_length:
+            state_sequence = state_sequence[:, -self.sequence_length:, :] # Take only the most recent sequence_length states
+
+        lstm_out, (h_n, c_n) = self.lstm(state_sequence)
+        # Use the last hidden state for the feed-forward layers
+        x = h_n.squeeze(0) # h_n shape: (num_layers * num_directions, batch, hidden_size)
+        
+        x = torch.relu(self.l1(x))
         x = torch.relu(self.l2(x))
         return self.max_action * torch.tanh(self.l3(x))
 
 class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim, action_dim, sequence_length=3, hidden_size=192): # Slightly reduced sequence_length and hidden_size for faster training
         super(Critic, self).__init__()
-        self.l1 = nn.Linear(state_dim + action_dim, 256)
+        self.sequence_length = sequence_length
+        self.hidden_size = hidden_size
+
+        self.lstm = nn.LSTM(state_dim, hidden_size, batch_first=True)
+        self.l1 = nn.Linear(hidden_size + action_dim, 256)
         self.l2 = nn.Linear(256, 256)
         self.l3 = nn.Linear(256, 1)
 
-    def forward(self, state, action):
-        x = torch.cat([state, action], 1)
+    def forward(self, state_sequence, action):
+        # state_sequence expected shape: (batch_size, sequence_length, state_dim)
+        # If input is a single state, unsqueeze to create a sequence of length 1
+        if state_sequence.dim() == 2: # (batch_size, state_dim)
+            state_sequence = state_sequence.unsqueeze(1) # -> (batch_size, 1, state_dim)
+
+        if state_sequence.shape[1] < self.sequence_length:
+            padding_needed = self.sequence_length - state_sequence.shape[1]
+            padding = torch.zeros(state_sequence.shape[0], padding_needed, state_sequence.shape[2], device=state_sequence.device)
+            state_sequence = torch.cat([padding, state_sequence], dim=1)
+        elif state_sequence.shape[1] > self.sequence_length:
+            state_sequence = state_sequence[:, -self.sequence_length:, :]
+
+        lstm_out, (h_n, c_n) = self.lstm(state_sequence)
+        # Use the last hidden state and concatenate with action
+        x = h_n.squeeze(0) # h_n shape: (num_layers * num_directions, batch, hidden_size)
+        
+        x = torch.cat([x, action], 1)
         x = torch.relu(self.l1(x))
         x = torch.relu(self.l2(x))
         return self.l3(x)
 class DDPG:
-    def __init__(self, state_dim, action_dim, max_action):
-        self.actor = Actor(state_dim, action_dim, max_action)
+    def __init__(self, state_dim, action_dim, max_action, sequence_length=4):
+        self.actor = Actor(state_dim, action_dim, max_action, sequence_length=sequence_length)
         self.actor_target = copy.deepcopy(self.actor)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)  # REDUCED from 1e-4
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)
 
-        self.critic = Critic(state_dim, action_dim)
+        self.critic = Critic(state_dim, action_dim, sequence_length=sequence_length)
         self.critic_target = copy.deepcopy(self.critic)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=5e-4)  # REDUCED from 1e-3
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=5e-4)
 
         self.max_action = max_action
         self.discount = 0.99
@@ -81,35 +124,45 @@ class DDPG:
         self.critic.to(self.device)
         self.critic_target.to(self.device)
 
-    def select_action(self, state):
-        state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
-        return self.actor(state).cpu().data.numpy().flatten()
+    def select_action(self, state_sequence):
+        # state_sequence is already a numpy array of shape (current_sequence_length, state_dim)
+        state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device) # Add batch dimension
+        return self.actor(state_sequence).cpu().data.numpy().flatten()
 
     def train(self, replay_buffer, batch_size=100):
-        state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
+        state_sequences, actions, next_state_sequences, rewards, not_dones = replay_buffer.sample(batch_size)
 
-        state = torch.FloatTensor(state).to(self.device)
-        action = torch.FloatTensor(action).to(self.device)
-        next_state = torch.FloatTensor(next_state).to(self.device)
-        reward = torch.FloatTensor(reward).to(self.device)
-        not_done = torch.FloatTensor(not_done).to(self.device)
+        state_sequences = torch.FloatTensor(state_sequences).to(self.device)
+        actions = torch.FloatTensor(actions).to(self.device)
+        next_state_sequences = torch.FloatTensor(next_state_sequences).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        not_dones = torch.FloatTensor(not_dones).to(self.device)
 
-        target_Q = self.critic_target(next_state, self.actor_target(next_state))
-        target_Q = reward + (not_done * self.discount * target_Q).detach()
+        # Compute target Q value
+        target_actions = self.actor_target(next_state_sequences)
+        target_Q = self.critic_target(next_state_sequences, target_actions)
+        target_Q = rewards + (not_dones * self.discount * target_Q).detach()
 
-        current_Q = self.critic(state, action)
+        # Get current Q estimate
+        current_Q = self.critic(state_sequences, actions)
+
+        # Compute critic loss
         critic_loss = nn.functional.mse_loss(current_Q, target_Q)
 
+        # Optimize the critic
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        actor_loss = -self.critic(state, self.actor(state)).mean()
+        # Compute actor loss
+        actor_loss = -self.critic(state_sequences, self.actor(state_sequences)).mean()
 
+        # Optimize the actor
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
 
+        # Update the frozen target models
         for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
@@ -120,12 +173,20 @@ class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
 
-    def push(self, state, action, next_state, reward, done):
-        self.buffer.append((state, action, next_state, reward, done))
+    def push(self, state_sequence, action, next_state_sequence, reward, done):
+        # state_sequence and next_state_sequence are already numpy arrays
+        self.buffer.append((state_sequence, action, next_state_sequence, reward, done))
 
     def sample(self, batch_size):
-        state, action, next_state, reward, done = zip(*random.sample(self.buffer, batch_size))
-        return np.array(state), np.array(action), np.array(next_state), np.array(reward).reshape(-1, 1), np.array(done).reshape(-1, 1)
+        state_sequences, actions, next_state_sequences, rewards, dones = zip(*random.sample(self.buffer, batch_size))
+        # Convert lists of numpy arrays to single numpy arrays
+        return (
+            np.array(state_sequences),
+            np.array(actions),
+            np.array(next_state_sequences),
+            np.array(rewards).reshape(-1, 1),
+            np.array(dones).reshape(-1, 1)
+        )
 
     def __len__(self):
         return len(self.buffer)
@@ -174,17 +235,15 @@ class MarineEnv:
         
         return normalized
 
-    def _get_state(self):
-        """Modified to return normalized state"""
+    def _get_current_raw_state(self):
+        """Returns the current raw (unnormalized) state vector."""
         current_lat, current_lon = self.current_position_latlon
         
-        # Handle case where all landmarks are visited
         if self.current_landmark_idx >= len(self.landmark_points):
-            target_landmark_lat, target_landmark_lon = self.landmark_points[-1] # Target the last landmark
+            target_landmark_lat, target_landmark_lon = self.landmark_points[-1]
         else:
             target_landmark_lat, target_landmark_lon = self.landmark_points[self.current_landmark_idx]
 
-        # Get cached weather data (keep existing code)
         cache_key = (round(current_lat, 1), round(current_lon, 1))
         if cache_key in self.weather_cache:
             sea_currents = self.weather_cache[cache_key]
@@ -206,13 +265,10 @@ class MarineEnv:
             self.landmark_points[self.current_landmark_idx]
         ).km
 
-        # Calculate minimum distance and closest point to A* path grid
         min_dist_to_astar_path_grid, closest_astar_point = self._get_min_distance_to_astar_path_grid(current_lat, current_lon)
-        
-        # Calculate bearing to the closest A* path point
         bearing_to_astar_path = self._calculate_bearing(self.current_position_latlon, closest_astar_point)
 
-        state = np.array([
+        raw_state = np.array([
             current_lat, current_lon,
             self.current_speed_knots, self.current_heading_deg,
             target_landmark_lat, target_landmark_lon,
@@ -220,12 +276,22 @@ class MarineEnv:
             sea_currents["wind_wave_height"], sea_currents["wind_wave_period"], sea_currents["wind_wave_direction"],
             self.vessel["fuel_tank_remaining_t"],
             distance_to_target_landmark,
-            min_dist_to_astar_path_grid, # New state variable
-            bearing_to_astar_path # New state variable: bearing to closest A* path point
+            min_dist_to_astar_path_grid,
+            bearing_to_astar_path
         ], dtype=np.float32)
         
-        # NORMALIZE before returning
-        return self._normalize_state(state)
+        return raw_state
+
+    def _get_state(self):
+        """Returns the current normalized state sequence."""
+        raw_state = self._get_current_raw_state()
+        normalized_state = self._normalize_state(raw_state)
+        
+        self.state_history.append(normalized_state)
+        
+        # Convert deque to numpy array for consistent output
+        # The Actor/Critic forward methods will handle padding/truncation to self.sequence_length
+        return np.array(list(self.state_history))
     
     def _calculate_reward(self, reward_info, episode): # Added episode parameter
         """
@@ -274,9 +340,10 @@ class MarineEnv:
         land_collision_occurred = reward_info.get('land_collision_occurred', False)
         out_of_bounds_occurred = reward_info.get('out_of_bounds_occurred', False)
 
-        # Extract A* path info from the current state (last element)
-        current_state = self._get_state() # Get the current (normalized) state
-        min_dist_to_astar_path_grid = current_state[14] * 200.0 # Denormalize
+        # Extract A* path info from the current state (last element of the sequence)
+        current_state_sequence = self._get_state() # Get the current (normalized) state sequence
+        current_state_last = current_state_sequence[-1] # Get the last state in the sequence
+        min_dist_to_astar_path_grid = current_state_last[14] * 200.0 # Denormalize
         current_lat, current_lon = self.current_position_latlon
 
         # Get current weather penalty for dynamic avoidance
@@ -294,11 +361,11 @@ class MarineEnv:
         
         if distance_reduction > 0:
             # Reward for moving closer to the target landmark
-            reward_breakdown['progress_reward'] = distance_reduction * 4 # Significantly increased reward for progress
+            reward_breakdown['progress_reward'] = distance_reduction * 2.0 # Significantly increased reward for progress
             
             # Additional bonus if breaking the minimum distance record
             if new_distance < self.min_distance_to_target_achieved:
-                reward_breakdown['progress_reward'] += (self.min_distance_to_target_achieved - new_distance) * 4.0
+                reward_breakdown['progress_reward'] += (self.min_distance_to_target_achieved - new_distance) * 8.0
                 self.min_distance_to_target_achieved = new_distance # Update the record
         else:
             # Penalize for moving away or staying still
@@ -310,8 +377,8 @@ class MarineEnv:
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         # Proximity bonus: stronger as agent gets closer
-        if new_distance < 25: # Increased range for proximity bonus
-            proximity_bonus = (25 - new_distance) * 6.0 # Adjusted multiplier
+        if new_distance < 20: # Increased range for proximity bonus
+            proximity_bonus = (20 - new_distance) * 3.0 # Adjusted multiplier
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         # Distance penalty: penalize based on absolute distance, but less aggressively
@@ -328,7 +395,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 17 # Increased heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 10 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -454,7 +521,7 @@ class MarineEnv:
         astar_following_reward = 0.0
         if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 15.0 # Significantly increased A* proximity reward
+            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 20.0 # Significantly increased A* proximity reward
             astar_following_reward += astar_proximity_reward
         elif min_dist_to_astar_path_grid > 13: # Penalty for being too far from the A* path
             astar_following_reward -= (min_dist_to_astar_path_grid - 13) * 0.5 # Significantly increased penalty
@@ -482,13 +549,13 @@ class MarineEnv:
             epsilon = 1e-6 # To prevent division by zero
 
 
-            base_distance_reward = 200.0 # Increased base reward for completing the segment distance
-            distance_efficiency_bonus = max(0.0, 33000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
+            base_distance_reward = 100.0 # Increased base reward for completing the segment distance
+            distance_efficiency_bonus = max(0.0, 30000.0 / (segment_distance_travelled + epsilon)) # Bonus for shorter distance
             reward_breakdown['segment_distance_efficiency_reward'] = base_distance_reward + distance_efficiency_bonus
             print(f"  📏 Distance Efficiency Reward: {reward_breakdown['segment_distance_efficiency_reward']:.2f} (Travelled: {segment_distance_travelled:.1f}km)")
 
-            base_time_reward = 150.0 # Increased base reward for completing the segment time
-            time_efficiency_bonus = max(0.0, 3500.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
+            base_time_reward = 50.0 # Increased base reward for completing the segment time
+            time_efficiency_bonus = max(0.0, 5500.0 / (segment_time_spent + epsilon)) # Bonus for shorter time
             reward_breakdown['segment_time_efficiency_reward'] = base_time_reward + time_efficiency_bonus
             print(f"  ⏱️ Time Efficiency Reward: {reward_breakdown['segment_time_efficiency_reward']:.2f} (Spent: {segment_time_spent:.1f}h)")
 
@@ -501,13 +568,14 @@ class MarineEnv:
         return reward_breakdown
 
     def __init__(self, initial_vessel_state, full_astar_path_latlon, landmark_points, 
-             bathymetry_maze, grid_params, weather_penalty_grid):
+             bathymetry_maze, grid_params, weather_penalty_grid, sequence_length=4):
         self.vessel = initial_vessel_state
         self.full_astar_path_latlon = full_astar_path_latlon
         self.landmark_points = landmark_points
         self.bathymetry_maze = bathymetry_maze
         self.grid_params = grid_params
         self.weather_penalty_grid = weather_penalty_grid
+        self.sequence_length = sequence_length # New: Define sequence length for LSTM
 
         self.min_lat, self.min_lon, self.lat_step, self.lon_step, self.num_lat_cells, self.num_lon_cells = grid_params
 
@@ -540,6 +608,7 @@ class MarineEnv:
         self.visited_landmarks = set() # Initialize set to store visited landmark indices
         self.total_distance_segment = 0.0 # Track distance for current segment
         self.total_time_segment = 0.0     # Track time for current segment
+        self.state_history = deque(maxlen=self.sequence_length) # New: State history for LSTM
 
         # Create A* path grid
         self.astar_path_grid = create_astar_grid(full_astar_path_latlon, grid_params)
@@ -722,7 +791,13 @@ class MarineEnv:
 
         print(f"DEBUG: Resetting episode. Starting position: {self.current_position_latlon}, Target landmark index: {self.current_landmark_idx}")
 
-        return self._get_state()
+        # Fill state history with initial state for LSTM
+        initial_state_single = self._normalize_state(self._get_current_raw_state())
+        self.state_history.clear()
+        for _ in range(self.sequence_length):
+            self.state_history.append(initial_state_single)
+        
+        return np.array(list(self.state_history)) # Return the full initial sequence
 
     def _calculate_bearing(self, point1, point2):
         """Calculate bearing from point1 to point2 in degrees (0-360)"""
@@ -1109,9 +1184,9 @@ def train_ddpg_agent(env, agent, replay_buffer, num_episodes=500, batch_size=64,
         max_steps = 80  # INCREASED from 50
         
         # Curriculum: Adjust difficulty
-        if episode > 1500:
+        if episode > 500:
             env.time_step_hours = 2.5
-        if episode > 2000:
+        if episode > 800:
             env.time_step_hours = 2
         
         while not done and step_count < max_steps:
@@ -1213,10 +1288,12 @@ if __name__ == "__main__":
 
     # Initialize Environment and Agent
     print("\nInitializing DRL environment...")
+    sequence_length = 3 # Slightly reduced sequence length for faster training
     env = MarineEnv(vessel.copy(), full_astar_path_latlon, landmark_points, 
-                   bathymetry_maze, grid_params, weather_penalty_grid)
+                   bathymetry_maze, grid_params, weather_penalty_grid, 
+                   sequence_length=sequence_length)
     
-    agent = DDPG(env.state_dim, env.action_dim, max_action=1.0)
+    agent = DDPG(env.state_dim, env.action_dim, max_action=1.0, sequence_length=sequence_length)
     replay_buffer = ReplayBuffer(capacity=10000)  # REDUCED buffer size
 
     print("\n" + "="*60)
@@ -1236,7 +1313,7 @@ if __name__ == "__main__":
     
     trained_agent, episode_rewards = train_ddpg_agent(
         env, agent, replay_buffer, 
-        num_episodes=3000,  # Keep 500 episodes for now
+        num_episodes=1000,  # Keep 500 episodes for now
         batch_size=64,     # Keep 64 batch size for now
         visualize_every_n_episodes=20,
         full_astar_path_latlon=full_astar_path_latlon,
