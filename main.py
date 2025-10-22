@@ -52,24 +52,29 @@ if __name__ == "__main__":
         crs="EPSG:4326"
     )
 
+    # Use the same random state for consistency
+    random_state_value = 50
+
+    print("Generating optimized route and landmarks (consistent with DRL_train.py)...")
+    full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid = \
+        generate_optimized_route_and_landmarks(vessel, num_sample_ports=3, random_state=random_state_value, 
+                                               cell_size_m=10000, landmark_interval_km=100)
+
+    if full_astar_path_latlon is None:
+        print("Failed to generate optimized route and landmarks. Exiting.")
+        plt.show()
+        exit()
+
     print("Generating optimal path route...")
     # ALIGNED: Use 3 ports for consistency with training
-    selected_ports = ports_gdf.sample(3, random_state=50)
-    optimal_path_route, G_main, selected_ports_main = get_optimal_path_route(vessel, selected_ports)
+    selected_ports = ports_gdf.sample(3, random_state=random_state_value)
+    optimal_path_route, G_main, selected_ports_main = get_optimal_path_route(
+        vessel, selected_ports, bathymetry_maze, grid_params, weather_penalty_grid
+    )
 
     if optimal_path_route:
         print("\nOptimal path route:", optimal_path_route)
         
-        # Use the same route and landmark generation as in DRL_train.py
-        print("Generating optimized route and landmarks (consistent with DRL_train.py)...")
-        full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid = \
-            generate_optimized_route_and_landmarks(vessel, num_sample_ports=3, random_state=50, 
-                                                   cell_size_m=10000, landmark_interval_km=100)
-
-        if full_astar_path_latlon is None:
-            print("Failed to generate optimized route and landmarks. Exiting.")
-            plt.show()
-            exit()
         
         # Extract grid dimensions from grid_params for plotting
         min_lat_astar, min_lon_astar, lat_step, lon_step, num_lat_cells, num_lon_cells = grid_params
@@ -83,16 +88,20 @@ if __name__ == "__main__":
             plt.show()
             exit()
         
+        # Define sequence length for LSTM (consistent with DRL_train.py)
+        sequence_length = 4
+
         # Initialize DRL environment
         env = MarineEnv(vessel.copy(), full_astar_path_latlon, landmark_points, 
-                       bathymetry_maze, grid_params, weather_penalty_grid)
+                       bathymetry_maze, grid_params, weather_penalty_grid, 
+                       sequence_length=sequence_length)
         
         # Load trained agent
         state_dim = env.state_dim
         action_dim = env.action_dim
         max_action = 1.0
 
-        agent = DDPG(state_dim, action_dim, max_action)
+        agent = DDPG(state_dim, action_dim, max_action, sequence_length=sequence_length)
         
         try:
             agent.actor.load_state_dict(torch.load("ddpg_actor.pth", map_location=agent.device))

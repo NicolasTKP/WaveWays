@@ -361,24 +361,24 @@ class MarineEnv:
         
         if distance_reduction > 0:
             # Reward for moving closer to the target landmark
-            reward_breakdown['progress_reward'] = distance_reduction * 3.0 # Significantly increased reward for progress
+            reward_breakdown['progress_reward'] = distance_reduction * 3.15 # Significantly increased reward for progress
             
             # Additional bonus if breaking the minimum distance record
             if new_distance < self.min_distance_to_target_achieved:
-                reward_breakdown['progress_reward'] += (self.min_distance_to_target_achieved - new_distance) * 8.0
+                reward_breakdown['progress_reward'] += (self.min_distance_to_target_achieved - new_distance) * 11.0
                 self.min_distance_to_target_achieved = new_distance # Update the record
         else:
             # Penalize for moving away or staying still
-            reward_breakdown['regression_penalty'] = distance_reduction * 5.5 # Penalty for moving away
+            reward_breakdown['regression_penalty'] = distance_reduction * 7.0 # Penalty for moving away
             if distance_reduction == 0 and new_distance > 5: # Small penalty for stagnation if not at target
-                reward_breakdown['regression_penalty'] -= 1.0
+                reward_breakdown['regression_penalty'] -= 1.2
 
         # ============================================================================
         # 2. DISTANCE SHAPING (SECONDARY - PROVIDES GRADIENT)
         # ============================================================================
         # Proximity bonus: stronger as agent gets closer
-        if new_distance < 20: # Increased range for proximity bonus
-            proximity_bonus = (20 - new_distance) * 6.0 # Adjusted multiplier
+        if new_distance < 15: # Increased range for proximity bonus
+            proximity_bonus = (15 - new_distance) * 9.0 # Adjusted multiplier
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         # Distance penalty: penalize based on absolute distance, but less aggressively
@@ -395,7 +395,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 13 # Increased heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 10 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -448,8 +448,8 @@ class MarineEnv:
         # Land/Out of bounds penalties (handled in step, but added to breakdown here for completeness)
         if land_collision_occurred:
             # Scale land collision penalty with episode number
-            base_penalty = 500.0 # Increased base penalty
-            scaled_penalty = base_penalty * max(1,round(episode / 1000, 0))  # Increase penalty per episode * max(1, episode / 300)
+            base_penalty = 350.0 # Increased base penalty
+            scaled_penalty = base_penalty * max(1,round(episode / 300, 0))  # Increase penalty per episode * max(1, episode / 300)
             reward_breakdown['land_collision_penalty'] = -scaled_penalty
             print(f"  ⚠️ LAND COLLISION: -{scaled_penalty:.2f} (scaled by episode {episode})")
         if out_of_bounds_occurred:
@@ -461,11 +461,11 @@ class MarineEnv:
         # ============================================================================
         optimal_speed = self.max_speed_knots * 0.75
         speed_diff = abs(self.current_speed_knots - optimal_speed)
-        speed_penalty = speed_diff * 0.5 # Increased speed efficiency penalty
+        speed_penalty = speed_diff * 0.4 # Increased speed efficiency penalty
         reward_breakdown['speed_efficiency_penalty'] = -speed_penalty
         
         if self.current_speed_knots < self.max_speed_knots * 0.4:
-            reward_breakdown['too_slow_penalty'] = -8.0 # Increased too slow penalty
+            reward_breakdown['too_slow_penalty'] = -7.0 # Increased too slow penalty
         
         # ============================================================================
         # 9. ANTI-CIRCULAR MOTION (EARLY DETECTION)
@@ -488,7 +488,7 @@ class MarineEnv:
                 lat_range_km = lat_range * 111.0
                 lon_range_km = lon_range * 111.0 * cos(radians(lats[0]))
                 
-                if lat_range_km < 3.5 * max(1, round(episode/800)) and lon_range_km < 3.5 * max(1, round(episode/800)):
+                if lat_range_km < 3.5 * max(1, round(episode/400)) and lon_range_km < 3.5 * max(1, round(episode/400)):
                     circular_penalty = 500.0 # Increased circular motion penalty
                     reward_breakdown['circular_motion_penalty'] = -circular_penalty
                     print(f"  🔄 CIRCULAR MOTION: -{circular_penalty} (range: {lat_range_km:.1f}x{lon_range_km:.1f}km)")
@@ -519,12 +519,12 @@ class MarineEnv:
         # 10. A* PATH FOLLOWING REWARD (GUIDANCE)
         # ============================================================================
         astar_following_reward = 0.0
-        if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
+        if min_dist_to_astar_path_grid < 4: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 18.0 # Significantly increased A* proximity reward
+            astar_proximity_reward = (4 - min_dist_to_astar_path_grid) * 38.5 # Significantly increased A* proximity reward
             astar_following_reward += astar_proximity_reward
-        elif min_dist_to_astar_path_grid > 13: # Penalty for being too far from the A* path
-            astar_following_reward -= (min_dist_to_astar_path_grid - 13) * 0.5 # Significantly increased penalty
+        elif min_dist_to_astar_path_grid > 8: # Penalty for being too far from the A* path
+            astar_following_reward -= (min_dist_to_astar_path_grid - 8) * 0.25 # Significantly increased penalty
 
         reward_breakdown['astar_path_following_reward'] = astar_following_reward
         
