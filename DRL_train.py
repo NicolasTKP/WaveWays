@@ -361,7 +361,7 @@ class MarineEnv:
         
         if distance_reduction > 0:
             # Reward for moving closer to the target landmark
-            reward_breakdown['progress_reward'] = distance_reduction * 2.0 # Significantly increased reward for progress
+            reward_breakdown['progress_reward'] = distance_reduction * 3.0 # Significantly increased reward for progress
             
             # Additional bonus if breaking the minimum distance record
             if new_distance < self.min_distance_to_target_achieved:
@@ -378,7 +378,7 @@ class MarineEnv:
         # ============================================================================
         # Proximity bonus: stronger as agent gets closer
         if new_distance < 20: # Increased range for proximity bonus
-            proximity_bonus = (20 - new_distance) * 3.0 # Adjusted multiplier
+            proximity_bonus = (20 - new_distance) * 6.0 # Adjusted multiplier
             reward_breakdown['proximity_bonus'] = proximity_bonus
         
         # Distance penalty: penalize based on absolute distance, but less aggressively
@@ -395,7 +395,7 @@ class MarineEnv:
             if heading_diff > 180:
                 heading_diff = 360 - heading_diff
             
-            heading_reward = (180 - heading_diff) / 180.0 * 10 # Increased heading reward multiplier
+            heading_reward = (180 - heading_diff) / 180.0 * 13 # Increased heading reward multiplier
             reward_breakdown['heading_reward'] = heading_reward
         
         # ============================================================================
@@ -521,7 +521,7 @@ class MarineEnv:
         astar_following_reward = 0.0
         if min_dist_to_astar_path_grid < 10: # Only reward/penalize if relatively close to A* path
             # Reward for being close to the A* path
-            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 20.0 # Significantly increased A* proximity reward
+            astar_proximity_reward = (10 - min_dist_to_astar_path_grid) * 18.0 # Significantly increased A* proximity reward
             astar_following_reward += astar_proximity_reward
         elif min_dist_to_astar_path_grid > 13: # Penalty for being too far from the A* path
             astar_following_reward -= (min_dist_to_astar_path_grid - 13) * 0.5 # Significantly increased penalty
