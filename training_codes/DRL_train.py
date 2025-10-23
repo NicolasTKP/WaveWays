@@ -1084,6 +1084,21 @@ class MarineEnv:
 
         return next_state, total_reward, done, info
     
+    def update_vessel_state(self, lat: float, lon: float, speed: float, heading: float):
+        """
+        Updates the vessel's current position, speed, and heading directly.
+        This is used when the frontend provides the current ground truth state.
+        """
+        self.current_position_latlon = (lat, lon)
+        self.current_speed_knots = speed
+        self.current_heading_deg = heading
+        # When the state is externally updated, we should also update the state history
+        # to ensure the LSTM receives a consistent sequence.
+        # We'll get the raw state and normalize it, then append to history.
+        raw_state = self._get_current_raw_state()
+        normalized_state = self._normalize_state(raw_state)
+        self.state_history.append(normalized_state)
+        
  
 # Additional fixes to add to the MarineEnv class:
 
@@ -1135,7 +1150,7 @@ def plot_simulation_episode(episode, env, full_astar_path_latlon, landmark_point
     ax.legend(loc='upper right', fontsize=8)
     plt.grid(True, linestyle=':', alpha=0.4)
     plt.tight_layout()
-    plt.savefig(f"output/episode_{episode+1}.png", dpi=100)
+    plt.savefig(f"../output/episode_{episode+1}.png", dpi=100)
     plt.close(fig)
     
 def normalize_reward_linear(reward):
@@ -1334,7 +1349,7 @@ if __name__ == "__main__":
     print("="*60 + "\n")
 
     # Save trained model
-    torch.save(trained_agent.actor.state_dict(), "ddpg_actor.pth")
+    torch.save(trained_agent.actor.state_dict(), "../models/ddpg_actor.pth")
     print("Trained DDPG actor model saved to ddpg_actor.pth")
 
     # Save training metrics

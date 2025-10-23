@@ -1,0 +1,9 @@
+curl -X POST "http://127.0.0.1:8000/api/get_next_action" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "3f073125-e13f-4fe8-b52e-d7a42d80406b",
+    "current_lat": 4.0,
+    "current_lon": 100.0,
+    "current_speed": 15.0,
+    "current_heading": 90.0
+  }'

@@ -44,7 +44,7 @@ except ImportError as e:
 
 if __name__ == "__main__":
     # Load ports data
-    ports_df = pd.read_excel("data\\Ports\\ports.xlsx")
+    ports_df = pd.read_excel("..\\data\\Ports\\ports.xlsx")
     ports_df[["lat", "lon"]] = ports_df["Decimal"].str.split(",", expand=True).astype(float)
     ports_gdf = gpd.GeoDataFrame(
         ports_df,
@@ -104,10 +104,11 @@ if __name__ == "__main__":
         agent = DDPG(state_dim, action_dim, max_action, sequence_length=sequence_length)
         
         try:
-            agent.actor.load_state_dict(torch.load("ddpg_actor.pth", map_location=agent.device))
+            # Corrected path to load the model from the parent directory
+            agent.actor.load_state_dict(torch.load("../models/ddpg_actor.pth", map_location=agent.device))
             print("✓ Trained DDPG actor model loaded successfully")
         except FileNotFoundError:
-            print("✗ Error: ddpg_actor.pth not found")
+            print("✗ Error: ddpg_actor.pth not found at expected path '../models/ddpg_actor.pth'")
             print("  Please run DRL_train.py first to train the agent")
             plt.show()
             exit()

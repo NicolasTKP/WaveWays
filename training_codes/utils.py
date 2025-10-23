@@ -602,7 +602,7 @@ def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destinati
         print("Error: At least two points (start and end) are required for multi-leg A* path generation.")
         return None, None, None, None, None
 
-    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
+    ds_bathymetry = xr.open_dataset("..\\data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
     ds_subset_astar = ds_bathymetry.sel(
         lon=slice(min_lon_region, max_lon_region),
         lat=slice(min_lat_region, max_lat_region)
@@ -956,7 +956,7 @@ def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, rand
     High-level function to generate an optimized route using TSP and A*,
     and then extract high-value landmark points.
     """
-    ports_df = pd.read_excel("data\\Ports\\ports.xlsx")
+    ports_df = pd.read_excel("..\\data\\Ports\\ports.xlsx")
     ports_df[["lat", "lon"]] = ports_df["Decimal"].str.split(",", expand=True).astype(float)
     ports_gdf = gpd.GeoDataFrame(
         ports_df,
@@ -967,7 +967,7 @@ def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, rand
     print("Generating optimal path route...")
     selected_ports = ports_gdf.sample(num_sample_ports, random_state=random_state)
     
-    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
+    ds_bathymetry = xr.open_dataset("..\\data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
     ds_subset_astar = ds_bathymetry.sel(
         lon=slice(min_lon_region, max_lon_region),
         lat=slice(min_lat_region, max_lat_region)
