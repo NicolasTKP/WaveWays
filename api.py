@@ -7,15 +7,17 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import geopandas as gpd
+from shapely.geometry import Point, Polygon, LineString
 
 # Import DRL components and utilities
 from training_codes.DRL_train import Actor, DDPG, MarineEnv
 from utils import (
     vessel, get_optimal_path_route_for_api, generate_multi_leg_astar_path_and_landmarks,
     create_bathymetry_grid, create_weather_penalty_grid, lat_lon_to_grid_coords,
-    grid_coords_to_lat_lon, find_closest_sea_node, create_astar_grid,
+    grid_coords_to_lat_lon, find_closest_sea_node, create_astar_grid, haversine,
     generate_landmark_points # Ensure this is imported if needed separately
 )
+from d_star_lite import find_d_star_lite_route # Import the D* Lite function
 
 app = FastAPI()
 
@@ -88,6 +90,18 @@ class GetNextActionResponse(BaseModel):
     done: bool
     message: str = "OK"
 
+class ObstaclePolygonModel(BaseModel):
+    points: List[PointModel]
+
+class DStarLiteRouteRequest(BaseModel):
+    session_id: str
+    obstacle_polygon: ObstaclePolygonModel
+
+class DStarLiteRouteResponse(BaseModel):
+    session_id: str
+    d_star_lite_path: List[PointModel]
+    message: str = "OK"
+
 # --- API Endpoints ---
 
 @app.post("/api/suggest_route_sequence", response_model=SuggestedRouteSequenceResponse)
@@ -119,6 +133,7 @@ async def suggest_route_sequence(request: SuggestRouteSequenceRequest):
             lon=slice(min_lon_region, max_lon_region),
             lat=slice(min_lat_region, max_lat_region)
         )
+        
         
         # Use the global 'vessel' for static properties like size and percent_of_height_underwater
         vessel_height_underwater_calc = vessel["size"][2] * vessel["percent_of_height_underwater"]
@@ -369,3 +384,186 @@ async def get_next_action(request: GetNextActionRequest):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred during getting next action: {str(e)}")
+
+@app.post("/api/d_star_lite_route", response_model=DStarLiteRouteResponse)
+async def get_d_star_lite_route(request: DStarLiteRouteRequest):
+    """
+    Calculates a D* Lite route avoiding a dynamic obstacle (polygon).
+    If the obstacle intersects the A* path, it finds two nearest landmark points
+    and uses them as start and end for D* Lite.
+    """
+    try:
+        session_data = simulations.get(request.session_id)
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session ID not found. Please initialize a simulation first.")
+
+        full_astar_path_latlon = session_data.get("full_astar_path_latlon")
+        landmark_points = session_data.get("landmark_points")
+        bathymetry_maze = session_data["bathymetry_maze"]
+        grid_params = session_data["grid_params"]
+        weather_penalty_grid = session_data["weather_penalty_grid"]
+
+        if not full_astar_path_latlon or not landmark_points:
+            raise HTTPException(status_code=400, detail="A* path or landmark points not found in session. Please initialize simulation.")
+
+        # Create Shapely Polygon from obstacle points
+        obstacle_coords = [(p.lon, p.lat) for p in request.obstacle_polygon.points]
+        obstacle_polygon = Polygon(obstacle_coords)
+
+        # Check for intersection with A* path
+        astar_line = LineString([(p[1], p[0]) for p in full_astar_path_latlon]) # (lon, lat) for shapely
+        
+        intersection_found = False
+        intersection_point = None
+
+        if astar_line.intersects(obstacle_polygon):
+            intersection_found = True
+            # Find the actual intersection geometry
+            intersection_geometry = astar_line.intersection(obstacle_polygon)
+            
+            # For simplicity, let's take the centroid of the intersection as a reference point
+            # If the intersection is a LineString, its centroid is a good representative.
+            # If it's a MultiPoint or MultiLineString, the overall centroid works.
+            if not intersection_geometry.is_empty:
+                intersection_point = intersection_geometry.centroid
+            else:
+                # Fallback if centroid is empty (e.g., point intersection)
+                # Find the closest point on the A* path to the obstacle
+                min_dist = float('inf')
+                closest_astar_point = None
+                for astar_lat, astar_lon in full_astar_path_latlon:
+                    p_astar = Point(astar_lon, astar_lat)
+                    dist = p_astar.distance(obstacle_polygon)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_astar_point = (astar_lat, astar_lon)
+                if closest_astar_point:
+                    intersection_point = Point(closest_astar_point[1], closest_astar_point[0])
+
+
+        d_star_lite_path_latlon = []
+        if intersection_found and intersection_point:
+            # Find two nearest landmark points to the intersection_point
+            # Convert intersection_point to (lat, lon)
+            ref_lat, ref_lon = intersection_point.y, intersection_point.x
+
+            distances = []
+            for i, (lm_lat, lm_lon) in enumerate(landmark_points):
+                dist = haversine(ref_lat, ref_lon, lm_lat, lm_lon)
+                distances.append((dist, i, (lm_lat, lm_lon)))
+            
+            distances.sort()
+
+            if len(distances) < 2:
+                raise HTTPException(status_code=400, detail="Not enough landmark points to reroute.")
+
+            # Select the two nearest landmark points
+            # The first one is the start for D* Lite, the second is the end.
+            # We need to ensure they are "around" the obstacle.
+            # A more robust approach would be to find the closest landmark *before* the obstacle
+            # and the closest landmark *after* the obstacle along the A* path.
+            # For simplicity, let's pick the two closest for now.
+            
+            # Let's refine this: find the landmark closest to the start of the intersection
+            # and the landmark closest to the end of the intersection along the A* path.
+            # This requires finding the segment of the A* path that intersects.
+
+            # For now, a simpler approach: find the two closest landmarks to the intersection point.
+            # This might not always yield a path around the obstacle if the landmarks are on the same side.
+            # A better approach would be to find the closest landmark *before* the intersection
+            # and the closest landmark *after* the intersection along the original A* path.
+
+            # Let's try to find the closest landmark *before* the intersection and *after* the intersection.
+            # This requires knowing the index of the intersection point on the A* path.
+            
+            # Find the index of the A* path point closest to the intersection point
+            min_dist_to_astar_path = float('inf')
+            closest_astar_path_idx = -1
+            for i, (path_lat, path_lon) in enumerate(full_astar_path_latlon):
+                dist = haversine(ref_lat, ref_lon, path_lat, path_lon)
+                if dist < min_dist_to_astar_path:
+                    min_dist_to_astar_path = dist
+                    closest_astar_path_idx = i
+            
+            if closest_astar_path_idx == -1:
+                raise HTTPException(status_code=500, detail="Could not find closest A* path point to intersection.")
+
+            # Find the closest landmark before and after the closest_astar_path_idx
+            start_lm_for_dstar = None
+            end_lm_for_dstar = None
+            
+            # Search backwards for the first landmark not in the obstacle
+            for i in range(closest_astar_path_idx, -1, -1):
+                path_point = full_astar_path_latlon[i]
+                p_point = Point(path_point[1], path_point[0])
+                if not p_point.intersects(obstacle_polygon):
+                    # Find the closest landmark to this point
+                    min_lm_dist = float('inf')
+                    for lm_lat, lm_lon in landmark_points:
+                        dist = haversine(path_point[0], path_point[1], lm_lat, lm_lon)
+                        if dist < min_lm_dist:
+                            min_lm_dist = dist
+                            start_lm_for_dstar = (lm_lat, lm_lon)
+                    break
+            
+            # Search forwards for the first landmark not in the obstacle
+            for i in range(closest_astar_path_idx, len(full_astar_path_latlon)):
+                path_point = full_astar_path_latlon[i]
+                p_point = Point(path_point[1], path_point[0])
+                if not p_point.intersects(obstacle_polygon):
+                    # Find the closest landmark to this point
+                    min_lm_dist = float('inf')
+                    for lm_lat, lm_lon in landmark_points:
+                        dist = haversine(path_point[0], path_point[1], lm_lat, lm_lon)
+                        if dist < min_lm_dist:
+                            min_lm_dist = dist
+                            end_lm_for_dstar = (lm_lat, lm_lon)
+                    break
+
+            if not start_lm_for_dstar or not end_lm_for_dstar:
+                raise HTTPException(status_code=400, detail="Could not find suitable landmark points for D* Lite rerouting.")
+
+            # Create a temporary grid with the obstacle
+            temp_bathymetry_maze = np.copy(bathymetry_maze)
+            min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells = grid_params
+
+            # Mark obstacle cells in the temporary grid
+            # Iterate over a bounding box around the obstacle for efficiency
+            min_o_lon, min_o_lat, max_o_lon, max_o_lat = obstacle_polygon.bounds
+            
+            # Convert bounds to grid coordinates
+            min_r, min_c = lat_lon_to_grid_coords(max_o_lat, min_o_lon, min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells)
+            max_r, max_c = lat_lon_to_grid_coords(min_o_lat, max_o_lon, min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells)
+
+            # Ensure coordinates are within grid bounds
+            min_r, min_c = max(0, min_r), max(0, min_c)
+            max_r, max_c = min(num_lat_cells - 1, max_r), min(num_lon_cells - 1, max_c)
+
+            for r in range(min_r, max_r + 1):
+                for c in range(min_c, max_c + 1):
+                    cell_lat, cell_lon = grid_coords_to_lat_lon(r, c, min_lat, min_lon, lat_step, lon_step)
+                    cell_point = Point(cell_lon, cell_lat)
+                    if obstacle_polygon.contains(cell_point) or obstacle_polygon.touches(cell_point):
+                        temp_bathymetry_maze[r][c] = 1 # Mark as obstacle
+
+            # Run D* Lite
+            d_star_lite_path_latlon = find_d_star_lite_route(
+                temp_bathymetry_maze,
+                start_lm_for_dstar,
+                end_lm_for_dstar,
+                min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells,
+                weather_penalty_grid=weather_penalty_grid
+            )
+            if not d_star_lite_path_latlon:
+                raise HTTPException(status_code=500, detail="D* Lite failed to find a reroute path.")
+
+        return DStarLiteRouteResponse(
+            session_id=request.session_id,
+            d_star_lite_path=[PointModel(lat=p[0], lon=p[1]) for p in d_star_lite_path_latlon],
+            message="D* Lite reroute calculated successfully." if intersection_found else "No intersection found, no reroute needed."
+        )
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred during D* Lite route calculation: {str(e)}")

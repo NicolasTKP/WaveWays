@@ -593,7 +593,7 @@ def get_optimal_path_route_for_api(vessel_data, start_point_latlon, destination_
 def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destination_points_latlon, 
                                                 min_lon_region=99, max_lon_region=120, 
                                                 min_lat_region=0, max_lat_region=8, 
-                                                cell_size_m=10000, landmark_interval_km=20):
+                                                cell_size_m=10000, landmark_interval_km=100):
     """
     Generates a combined A* path and landmark points for a given sequence of (lat, lon) destinations.
     This function assumes the sequence is already determined (e.g., by TSP or user input).
