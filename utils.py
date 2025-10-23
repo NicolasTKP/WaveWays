@@ -867,7 +867,7 @@ def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, rand
     print("Generating optimal path route...")
     selected_ports = ports_gdf.sample(num_sample_ports, random_state=random_state)
     
-    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
+    ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2024_sub_ice_topo.nc")
     ds_subset_astar = ds_bathymetry.sel(
         lon=slice(min_lon_region, max_lon_region),
         lat=slice(min_lat_region, max_lat_region)
