@@ -88,6 +88,7 @@ class InitializeMultiLegSimulationResponse(BaseModel):
     landmark_points: List[List[float]]
     unreachable_destinations: List[Dict[str, Any]] = [] # New field for unreachable points
     warnings: List[str] = [] # New field for general warnings
+    image_path: str = "" # New field for the path to the saved visualization image
 
 class GetNextActionRequest(BaseModel):
     session_id: str
@@ -415,6 +416,16 @@ async def initialize_multi_leg_simulation(request: InitializeMultiLegSimulationR
         session_data["current_leg_idx"] = 0 # Reset for new simulation
         session_data["current_landmark_idx"] = 0 # Reset for new simulation
 
+        # Save route visualization
+        image_path = _plot_route_with_bathymetry(
+            request.session_id,
+            full_astar_path_latlon,
+            landmark_points,
+            bathymetry_maze,
+            grid_params,
+            weather_penalty_grid
+        )
+
         return InitializeMultiLegSimulationResponse(
             session_id=request.session_id,
             message="Multi-leg simulation initialized successfully",
@@ -427,7 +438,8 @@ async def initialize_multi_leg_simulation(request: InitializeMultiLegSimulationR
             full_astar_path=full_astar_path_latlon,
             landmark_points=landmark_points,
             unreachable_destinations=unreachable_destinations_from_astar,
-            warnings=response_warnings
+            warnings=response_warnings,
+            image_path=image_path # Include the image path in the response
         )
     except HTTPException as e:
         raise e

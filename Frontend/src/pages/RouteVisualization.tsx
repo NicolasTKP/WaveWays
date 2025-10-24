@@ -53,6 +53,7 @@ interface OptimizedRouteData {
   totalTime?: number;
   warnings?: string[];
   unreachableDestinations?: { lat: number; lon: number; reason: string }[];
+  imagePath?: string; // New field for the path to the saved visualization image
 }
 
 const RouteVisualization = () => {
@@ -147,6 +148,7 @@ const RouteVisualization = () => {
           initialVesselState: response.initial_vessel_state,
           unreachableDestinations: response.unreachable_destinations,
           warnings: response.warnings,
+          imagePath: response.image_path, // Store the image path
         });
         setCurrentLocationState({
           id: "current",
