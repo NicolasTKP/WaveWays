@@ -635,7 +635,7 @@ class MarineEnv:
         self.weather_cache = {}
         print("Pre-caching weather data for strategic grid points...")
         
-        cache_interval = 40
+        cache_interval = 160
         num_cache_lat = max(1, self.num_lat_cells // cache_interval)
         num_cache_lon = max(1, self.num_lon_cells // cache_interval)
         total_cache_points = num_cache_lat * num_cache_lon

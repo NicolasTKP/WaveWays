@@ -42,7 +42,7 @@ def knots_to_kmh(knots):
     return knots * 1.852
 
 # -----------------------
-# TARGET SCALING HELPERS (NEW)
+# TARGET SCALING HELPERS 
 # -----------------------
 def scale_target(tta_sec):
     """ Scales TTA from seconds to log(1 + TTA_hrs) """
@@ -244,6 +244,148 @@ def build_lstm_model(input_shape, dropout=0.2):
     optimizer = Adam(learning_rate=0.001) 
     model.compile(optimizer=optimizer, loss='mse', metrics=['mae'])
     return model
+
+# -----------------------
+# Full training pipeline
+# -----------------------
+def train_hybrid_model(csv_path,
+                         seq_len=10, # Increased sequence length
+                         test_size=0.15,
+                         random_state=42,
+                         model_dir='models_malaysia'): # Specific model directory
+    os.makedirs(model_dir, exist_ok=True)
+
+    print("Loading and preparing AIS data...")
+    df = load_and_prepare_ais(csv_path)
+    print(f"Loaded {len(df)} AIS records after filtering.")
+    if len(df) < 100:
+        print("WARNING: Data size is very small. Training will likely fail/be meaningless.")
+        return None
+
+    print("Engineering features...")
+    df, dynamic_feature_cols, static_feature_cols = engineer_features(df)
+    feature_cols = dynamic_feature_cols + static_feature_cols
+    print("Dynamic Feature columns:", dynamic_feature_cols)
+    print("Static Feature columns (for XGBoost):", static_feature_cols)
+
+    print("Building sequences for LSTM...")
+    X_seq, y, X_last, combined_feature_cols = build_sequences(df, dynamic_feature_cols, static_feature_cols, seq_len=seq_len)
+    if X_seq.shape[0] < 50:
+         print(f"WARNING: Only {X_seq.shape[0]} sequences built. Not enough data for robust split/training.")
+         return None
+         
+    print(f"Built sequences: {X_seq.shape[0]} samples, sequence length {X_seq.shape[1]}, features {X_seq.shape[2]}")
+
+    # train/test split (random)
+    X_seq_train, X_seq_test, X_last_train, X_last_test, y_train, y_test = train_test_split(
+        X_seq, X_last, y, test_size=test_size, random_state=random_state
+    )
+
+    # --- Scaling Dynamic/Sequential Features for LSTM ---
+    nsamples, seq_len_in, nfeat_dyn = X_seq_train.shape
+    scaler_seq = StandardScaler()
+    
+    # Fit scaler on the flattened training sequences
+    X_seq_train_flat = X_seq_train.reshape(-1, nfeat_dyn)
+    scaler_seq.fit(X_seq_train_flat)
+    
+    # Transform and reshape back
+    X_seq_train_scaled = scaler_seq.transform(X_seq_train_flat).reshape(-1, seq_len_in, nfeat_dyn)
+    X_seq_test_flat = X_seq_test.reshape(-1, nfeat_dyn)
+    X_seq_test_scaled = scaler_seq.transform(X_seq_test_flat).reshape(-1, seq_len_in, nfeat_dyn)
+    
+    # --- Scaling Combined Features for XGBoost ---
+    scaler_last = StandardScaler()
+    scaler_last.fit(X_last_train)
+    X_last_train_scaled = scaler_last.transform(X_last_train)
+    X_last_test_scaled = scaler_last.transform(X_last_test)
+
+    # train LSTM
+    input_shape = (seq_len_in, nfeat_dyn)
+    print("Building LSTM model...")
+    lstm_model = build_lstm_model(input_shape)
+    lstm_path = os.path.join(model_dir, 'lstm_eta.h5')
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1), # Increased patience
+        ModelCheckpoint(lstm_path, monitor='val_loss', save_best_only=True, verbose=1)
+    ]
+    print("Training LSTM...")
+    hist = lstm_model.fit(
+        X_seq_train_scaled, y_train,
+        validation_split=0.12,
+        epochs=100,
+        batch_size=128, # Increased batch size
+        callbacks=callbacks,
+        verbose=2
+    )
+    
+    # Load best weights
+    lstm_model.load_weights(lstm_path)
+
+    # LSTM predictions on train and test
+    print("Predicting with LSTM...")
+    y_pred_train_lstm = lstm_model.predict(X_seq_train_scaled, verbose=0).ravel()
+    y_pred_test_lstm = lstm_model.predict(X_seq_test_scaled, verbose=0).ravel()
+
+    # residuals: actual - lstm_pred (residuals are in log(1 + TTA_hrs) units)
+    res_train = y_train - y_pred_train_lstm
+    res_test = y_test - y_pred_test_lstm
+
+    # Train XGBoost on last-step features to predict residuals
+    print("Training XGBoost on residuals...")
+    dtrain = xgb.DMatrix(X_last_train_scaled, label=res_train)
+    dtest = xgb.DMatrix(X_last_test_scaled, label=res_test)
+    params = {
+        'objective': 'reg:squarederror',
+        'eval_metric': 'rmse',
+        'max_depth': 7, # Slightly deeper XGBoost
+        'eta': 0.05,    # Slower learning rate
+        'verbosity': 1
+    }
+    watchlist = [(dtrain, 'train'), (dtest, 'eval')]
+    xgb_model = xgb.train(params, dtrain, num_boost_round=300, evals=watchlist, early_stopping_rounds=20, verbose_eval=30) # More rounds/patience
+
+    # final ensemble predictions (in log(1 + TTA_hrs) units)
+    y_pred_test_final_scaled = y_pred_test_lstm + xgb_model.predict(dtest)
+    y_pred_train_final_scaled = y_pred_train_lstm + xgb_model.predict(dtrain)
+
+    # UN-SCALE PREDICTIONS and TRUE LABELS
+    y_train_unscaled = unscale_target(y_train)
+    y_test_unscaled = unscale_target(y_test)
+    y_pred_test_final = unscale_target(y_pred_test_final_scaled)
+    y_pred_train_final = unscale_target(y_pred_train_final_scaled)
+    
+    # EVALUATE
+    def evaluate(y_true, y_pred, label):
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = math.sqrt(mean_squared_error(y_true, y_pred))
+        print(f"{label} MAE: {mae:.2f} sec ({mae/3600:.2f} hrs), RMSE: {rmse:.2f} sec ({rmse/3600:.2f} hrs)")
+        return mae, rmse
+
+    print("\n--- FINAL EVALUATION (Unscaled TTA in Seconds) ---")
+    evaluate(y_train_unscaled, y_pred_train_final, 'Train')
+    evaluate(y_test_unscaled, y_pred_test_final, 'Test')
+
+    # Save scalers, XGBoost model, and feature list
+    joblib.dump(scaler_seq, os.path.join(model_dir, 'scaler_seq.joblib'))
+    joblib.dump(scaler_last, os.path.join(model_dir, 'scaler_last.joblib'))
+    xgb_model.save_model(os.path.join(model_dir, 'xgb_residuals.json'))
+    joblib.dump({'dynamic_feature_cols': dynamic_feature_cols, 
+                 'static_feature_cols': static_feature_cols,
+                 'combined_feature_cols': combined_feature_cols,
+                 'seq_len': seq_len}, os.path.join(model_dir, 'meta.joblib'))
+
+    print("Saved models and scalers to:", model_dir)
+    return {
+        'lstm_model': lstm_model,
+        'xgb_model': xgb_model,
+        'scaler_seq': scaler_seq,
+        'scaler_last': scaler_last,
+        'dynamic_feature_cols': dynamic_feature_cols,
+        'static_feature_cols': static_feature_cols,
+        'seq_len': seq_len
+    }
+
 # -----------------------
 # Prediction function for route planner
 # -----------------------
@@ -384,10 +526,48 @@ def load_ensemble(model_dir='models_malaysia'):
 # Demo / Example usage (main)
 # -----------------------
 if __name__ == '__main__':
+    # WARNING: This sample CSV will not allow successful training.
+    # Replace 'path/to/your/malaysia_ais.csv' with your large dataset file path.
+    sample_csv = "C:\\Users\\User\\Downloads\\AIS_2024_12_31.csv"
     
-    model_dir = 'models_malaysia'
+    # Create a slightly larger, but still insufficient, sample for structured testing
+    if not os.path.exists(sample_csv):
+        # Create a voyage of 10 points for MMSI 1 and 2 points for MMSI 2
+        sample_text = """MMSI,BaseDateTime,LAT,LON,SOG,COG,Heading,VesselType,Length,Width,Draft
+            367776660,2025-01-01T12:00:00,3.0,101.0,12.0,90.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:05:00,3.1,101.1,12.1,91.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:10:00,3.2,101.2,12.2,92.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:15:00,3.3,101.3,12.3,93.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:20:00,3.4,101.4,12.4,94.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:25:00,3.5,101.5,12.5,95.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:30:00,3.6,101.6,12.6,96.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:35:00,3.7,101.7,12.7,97.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:40:00,3.8,101.8,12.8,98.0,90.0,70,180,30,12.0
+            367776660,2025-01-01T12:45:00,3.9,101.9,12.9,99.0,90.0,70,180,30,12.0
+            368095340,2025-01-01T13:00:00,4.0,102.0,10.0,180.0,180.0,30,120,20,8.0
+            368095340,2025-01-01T13:05:00,4.1,102.1,10.1,181.0,180.0,30,120,20,8.0
+            """
+        with open(sample_csv, 'w', newline='') as f:
+            f.write(sample_text.replace(" ", ""))
 
-    models = load_ensemble(model_dir=model_dir)
+    model_dir = 'models_malaysia'
+    
+    print(f"ATTENTION: Attempting training with dummy data '{sample_csv}'.")
+    print("THIS WILL FAIL TO PRODUCE A USABLE MODEL. REPLACE WITH A LARGE DATASET.")
+
+    models = None
+    try:
+        # Increased seq_len to 10 for better sequence modeling
+        models = train_hybrid_model(sample_csv, seq_len=10, test_size=0.3, model_dir=model_dir)
+    except Exception as e:
+        print(f"\nTraining failed (Error: {e}). Trying to load pretrained models.")
+        try:
+            models = load_ensemble(model_dir=model_dir)
+            print("Successfully loaded pretrained models.")
+        except Exception as e2:
+            print(f"No pretrained models found. Cannot run prediction demo. Error: {e2}")
+            # raise SystemExit() # Commented out to allow demo to proceed if models loaded
+
     if models:
         # DEMO prediction: Use the last sequence of the dummy data
         df_full = load_and_prepare_ais(sample_csv)
@@ -413,7 +593,6 @@ if __name__ == '__main__':
             print(f"Filtered {initial_count - filtered_count} records outside the Malaysia Straits bounding box.")
             # -------------------------------------------------------------
             
-            # ... (rest of the code: sorting, voyage segmentation, etc.)
             
             return df
         
@@ -425,6 +604,14 @@ if __name__ == '__main__':
         last_lat = longest_voyage['LAT'].iloc[-1]
         last_lon = longest_voyage['LON'].iloc[-1]
         route_end = (last_lat + 0.01, last_lon + 0.01)
+        
+        # Replace the line below with your desired fixed destination coordinates
+        # Example: Port of Tanjung Pelepas (PTP) (1.35 N, 103.52 E)
+        DESTINATION_LAT = 1.35   # Your desired Latitude
+        DESTINATION_LON = 103.52 # Your desired Longitude
+        
+        route_end = (DESTINATION_LAT, DESTINATION_LON)
+
 
         print("\n--- DEMO Prediction ---")
         pred = predict_eta(recent, route_end, models)

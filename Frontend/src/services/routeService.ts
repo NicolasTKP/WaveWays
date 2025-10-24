@@ -82,6 +82,8 @@ export interface GetNextActionRequest {
 }
 
 export interface GetNextActionResponse {
+  new_lat: number; // Added
+  new_lon: number; // Added
   new_speed: number;
   new_heading: number;
   current_landmark_idx: number;
@@ -107,6 +109,40 @@ export const suggestRouteSequence = async (
   if (!response.ok) {
     const errorData = await response.json();
     throw new Error(errorData.detail || "Failed to suggest route sequence");
+  }
+
+  return response.json();
+};
+
+export interface ObstaclePolygonModel {
+  points: PointModel[];
+}
+
+export interface DStarLiteRouteRequest {
+  session_id: string;
+  obstacle_polygon: ObstaclePolygonModel;
+}
+
+export interface DStarLiteRouteResponse {
+  session_id: string;
+  d_star_lite_path: PointModel[];
+  message: string;
+}
+
+export const getDStarLiteRoute = async (
+  request: DStarLiteRouteRequest
+): Promise<DStarLiteRouteResponse> => {
+  const response = await fetch(`${API_BASE_URL}/d_star_lite_route`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to get D* Lite route");
   }
 
   return response.json();

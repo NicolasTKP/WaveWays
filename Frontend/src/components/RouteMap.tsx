@@ -1,7 +1,7 @@
 import { Navigation } from 'lucide-react';
-import { GoogleMap, Marker, Polyline, useJsApiLoader } from "@react-google-maps/api";
+import { GoogleMap, Marker, Polyline, Polygon, useJsApiLoader } from "@react-google-maps/api";
 import { useEffect, useState } from "react";
-
+import { PointModel } from "@/services/routeService"; // Import PointModel
 
 interface Port {
   name: string;
@@ -10,29 +10,33 @@ interface Port {
   country?: string;
 }
 
-interface RouteSegment {
+interface RouteSegmentWithColor {
+  id: string; // Unique ID for the route
   start: Port;
   end: Port;
   path: [number, number][];
-  distance: number;
-  fuelConsumption: number;
+  distance?: number; // Optional for D* Lite path
+  fuelConsumption?: number; // Optional for D* Lite path
+  color: string; // Color for the polyline
 }
 
 interface RouteMapProps {
   ports?: Port[];
-  route?: RouteSegment[];
+  routes?: RouteSegmentWithColor[]; // Changed to routes (plural)
   currentLocation?: Port;
   center?: google.maps.LatLngLiteral;
   zoom?: number;
   onMapClick?: (lat: number, lng: number) => void;
+  obstaclePolygon?: PointModel[]; // New prop for obstacle
 }
 
 export const RouteMap = ({
   ports = [],
-  route = [],
+  routes = [], // Changed to routes (plural)
   center = { lat: 4.2105, lng: 101.9758 }, // Malaysia center
-  zoom =4,
-  onMapClick // <-- new callback
+  zoom = 4,
+  onMapClick,
+  obstaclePolygon = [], // Default to empty array
 }: RouteMapProps) => {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY!,
@@ -116,18 +120,32 @@ export const RouteMap = ({
         ))}
 
         {/* Route lines */}
-        {route.map((segment, index) => (
+        {routes.map((routeSegment) => (
           <Polyline
-            key={index}
-            path={segment.path.map(([lat, lng]) => ({ lat, lng }))}
+            key={routeSegment.id}
+            path={routeSegment.path.map(([lat, lng]) => ({ lat, lng }))}
             options={{
-              strokeColor: index === 0 ? "#0ea5e9" : "#22c55e",
+              strokeColor: routeSegment.color,
               strokeOpacity: 0.9,
               strokeWeight: 2.5,
               geodesic: true,
             }}
           />
         ))}
+
+        {/* Obstacle Polygon */}
+        {obstaclePolygon.length > 0 && (
+          <Polygon
+            paths={obstaclePolygon.map((p) => ({ lat: p.lat, lng: p.lon }))}
+            options={{
+              strokeColor: "#FF0000",
+              strokeOpacity: 0.8,
+              strokeWeight: 2,
+              fillColor: "#FF0000",
+              fillOpacity: 0.35,
+            }}
+          />
+        )}
       </GoogleMap>
     </div>
   );

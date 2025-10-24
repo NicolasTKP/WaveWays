@@ -31,6 +31,8 @@ import {
   VesselConfig,
   getNextAction, // Import getNextAction
   GetNextActionResponse, // Import GetNextActionResponse
+  getDStarLiteRoute, // Import getDStarLiteRoute
+  ObstaclePolygonModel, // Import ObstaclePolygonModel
 } from "@/services/routeService";
 
 interface RouteVisualizationState {
@@ -89,6 +91,10 @@ const RouteVisualization = () => {
   >(null);
   const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const [simulationDone, setSimulationDone] = useState(false);
+  const [dStarLitePath, setDStarLitePath] = useState<[number, number][] | null>(
+    null
+  );
+  const [obstaclePolygon, setObstaclePolygon] = useState<PointModel[]>([]);
 
   // Helper to convert degrees to radians
   const toRad = (deg: number) => deg * (Math.PI / 180);
@@ -413,6 +419,67 @@ const RouteVisualization = () => {
     }
   };
 
+  const handleGenerateObstacleAndReroute = async () => {
+    if (!sessionID || !optimizedRouteData?.fullAstarPath.length) {
+      toast({
+        title: "Error",
+        description: "Session ID or A* path is missing for rerouting.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const path = optimizedRouteData.fullAstarPath;
+      const midIndex = Math.floor(path.length / 2);
+      const midPoint = path[midIndex]; // [lat, lon]
+
+      // Generate a simple square obstacle around the midpoint
+      const obstacleSize = 0.1; // degrees
+      const obstaclePoints: PointModel[] = [
+        { lat: midPoint[0] - obstacleSize, lon: midPoint[1] - obstacleSize, name: "Obstacle_BL" },
+        { lat: midPoint[0] + obstacleSize, lon: midPoint[1] - obstacleSize, name: "Obstacle_TL" },
+        { lat: midPoint[0] + obstacleSize, lon: midPoint[1] + obstacleSize, name: "Obstacle_TR" },
+        { lat: midPoint[0] - obstacleSize, lon: midPoint[1] + obstacleSize, name: "Obstacle_BR" },
+        { lat: midPoint[0] - obstacleSize, lon: midPoint[1] - obstacleSize, name: "Obstacle_BL" }, // Close the polygon
+      ];
+
+      setObstaclePolygon(obstaclePoints);
+
+      const requestBody = {
+        session_id: sessionID,
+        obstacle_polygon: {
+          points: obstaclePoints,
+        },
+      };
+
+      const response = await getDStarLiteRoute(requestBody);
+
+      if (response.d_star_lite_path.length > 0) {
+        setDStarLitePath(response.d_star_lite_path.map(p => [p.lat, p.lon]));
+        toast({
+          title: "Reroute Successful",
+          description: "D* Lite path generated to avoid obstacle.",
+        });
+      } else {
+        toast({
+          title: "Reroute Failed",
+          description: response.message || "Could not find a D* Lite reroute path.",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error Rerouting",
+        description: error.message || "Failed to generate D* Lite route.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (isLoading) {
     // Changed from isCalculating
     return (
@@ -527,16 +594,30 @@ const RouteVisualization = () => {
                 <CardContent>
                   <RouteMap
                     ports={portsForMap}
-                    route={[
+                    routes={[
                       {
+                        id: "astar",
                         start: startPoint,
                         end: portsForMap[portsForMap.length - 1],
                         path: optimizedRouteData.fullAstarPath,
                         distance: totalDistance,
                         fuelConsumption: totalFuel,
+                        color: "red", // Original A* path in red
                       },
+                      ...(dStarLitePath
+                        ? [
+                            {
+                              id: "dstar",
+                              start: currentLocationState || startPoint, // D* Lite starts from current location or startPoint
+                              end: portsForMap[portsForMap.length - 1], // Ends at final destination
+                              path: dStarLitePath,
+                              color: "blue", // D* Lite path in blue
+                            },
+                          ]
+                        : []),
                     ]}
                     currentLocation={currentLocationState}
+                    obstaclePolygon={obstaclePolygon} // Pass obstacle polygon to map
                     onMapClick={handleMapClick} // Enable map clicks for D* Lite
                   />
                 </CardContent>
@@ -657,6 +738,15 @@ const RouteVisualization = () => {
                     </div>
                   </CardContent>
                 </Card>
+
+                {/* Reroute with Obstacle Button */}
+                <Button
+                  onClick={handleGenerateObstacleAndReroute}
+                  disabled={isLoading || !optimizedRouteData?.fullAstarPath.length}
+                  className="w-full h-12 text-lg bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-600 hover:to-teal-700 transition-all shadow-lg mt-6"
+                >
+                  Generate Obstacle & Reroute
+                </Button>
 
                 {/* Route Summary */}
                 {optimizedRouteData && (

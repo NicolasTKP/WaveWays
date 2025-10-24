@@ -315,7 +315,25 @@ export const RoutePlanner = () => {
                 <TabsContent value="map" className="space-y-4 mt-6">
                   <RouteMap
                     ports={optimizedRoute?.ports || [currentLocation]}
-                    route={optimizedRoute?.segments || []}
+                    routes={
+                      optimizedRoute?.segments
+                        ? [
+                            {
+                              id: "astar-planner",
+                              start: optimizedRoute.segments[0].start,
+                              end: optimizedRoute.segments[
+                                optimizedRoute.segments.length - 1
+                              ].end,
+                              path: optimizedRoute.segments.flatMap(
+                                (s) => s.path
+                              ),
+                              distance: optimizedRoute.totalDistance,
+                              fuelConsumption: optimizedRoute.totalFuel,
+                              color: "#0ea5e9", // Default color for planner route
+                            },
+                          ]
+                        : []
+                    }
                     currentLocation={currentLocation}
                   />
                 </TabsContent>
