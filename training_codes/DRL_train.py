@@ -202,10 +202,10 @@ class MarineEnv:
         normalized = state.copy()
         
         # Normalize lat/lon to [-1, 1] based on grid bounds
-        normalized[0] = (state[0] - self.min_lat) / (8.0) * 2 - 1  # lat
-        normalized[1] = (state[1] - self.min_lon) / (21.0) * 2 - 1  # lon
-        normalized[4] = (state[4] - self.min_lat) / (8.0) * 2 - 1  # target_lat
-        normalized[5] = (state[5] - self.min_lon) / (21.0) * 2 - 1  # target_lon
+        normalized[0] = (state[0] - self.min_lat) / (10.0) * 2 - 1  # lat (max_lat_region - min_lat_region = 10 - 0 = 10)
+        normalized[1] = (state[1] - self.min_lon) / (26.0) * 2 - 1  # lon (max_lon_region - min_lon_region = 125 - 99 = 26)
+        normalized[4] = (state[4] - self.min_lat) / (10.0) * 2 - 1  # target_lat
+        normalized[5] = (state[5] - self.min_lon) / (26.0) * 2 - 1  # target_lon
         
         # Normalize speed [0, max_speed] to [0, 1]
         normalized[2] = state[2] / self.max_speed_knots

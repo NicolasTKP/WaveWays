@@ -80,7 +80,7 @@ export const RouteMap = ({
           }
         }}
         className="
-      absolute top-14 left-12 z-50
+      absolute z-50
       flex items-center gap-2
       px-4 py-2
       bg-gradient-to-r from-primary to-accent
@@ -88,7 +88,7 @@ export const RouteMap = ({
       rounded-lg
       shadow-lg
       hover:from-primary/90 hover:to-accent/90
-      transition-all
+      transition-all transform translate-x-[1dvw] translate-y-[7dvh]
     "
       >
         <span className="inline-block">🚢 Recenter</span>
