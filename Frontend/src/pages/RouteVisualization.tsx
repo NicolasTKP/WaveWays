@@ -541,7 +541,7 @@ const RouteVisualization = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="min-h-screen flex flex-col bg-background mt-[3dvh]">
       <Navbar />
 
       <main className="flex-1">

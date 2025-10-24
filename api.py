@@ -21,11 +21,27 @@ from utils import (
     generate_landmark_points # Ensure this is imported if needed separately
 )
 from d_star_lite import find_d_star_lite_route # Import the D* Lite function
+from etaModel import predict_eta, load_ensemble # Import ETA prediction functions
 
 app = FastAPI()
 
 # Configure CORS
 origins = ["*"] # Temporarily allow all origins for debugging
+
+# Global variable to store loaded ETA models
+eta_models = None
+
+@app.on_event("startup")
+async def load_eta_models():
+    global eta_models
+    print("Loading ETA prediction models at startup...")
+    try:
+        eta_models = load_ensemble(model_dir='models') # Assuming models are in 'models/'
+        print("ETA prediction models loaded successfully.")
+    except Exception as e:
+        print(f"ERROR: Failed to load ETA prediction models: {e}")
+        # In a production environment, you might want to raise an exception or log this more robustly
+        eta_models = None # Ensure it's None if loading fails
 
 app.add_middleware(
     CORSMiddleware,
@@ -128,6 +144,27 @@ class SaveRouteVisualizationRequest(BaseModel):
 class SaveRouteVisualizationResponse(BaseModel):
     image_path: str
     message: str
+
+class RecentPoint(BaseModel):
+    MMSI: int
+    BaseDateTime: str
+    LAT: float
+    LON: float
+    SOG: float
+    COG: float
+    Heading: float
+    VesselType: int
+    Length: float
+    Width: float
+    Draft: float
+
+class ETAPredictionRequest(BaseModel):
+    recent_points: List[RecentPoint]
+    destination_lat: float
+    destination_lon: float
+
+class ETAPredictionResponse(BaseModel):
+    predicted_arrival_time_utc: str
 
 def _plot_route_with_bathymetry(
     session_id: str,
@@ -700,3 +737,31 @@ async def get_d_star_lite_route(request: DStarLiteRouteRequest):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred during D* Lite route calculation: {str(e)}")
+
+@app.post("/api/predict_eta", response_model=ETAPredictionResponse)
+async def predict_eta_api(request: ETAPredictionRequest):
+    """
+    Predicts the Estimated Time of Arrival (ETA) for a vessel given recent AIS-like data
+    and a destination.
+    """
+    global eta_models
+    if eta_models is None:
+        raise HTTPException(status_code=500, detail="ETA prediction models are not loaded. Server might be starting up or encountered an error during loading.")
+
+    try:
+        # Convert recent_points from Pydantic models to a list of dicts
+        recent_points_dicts = [p.dict() for p in request.recent_points]
+        destination_latlon = (request.destination_lat, request.destination_lon)
+
+        # Call the predict_eta function from etaModel.py
+        prediction_result = predict_eta(recent_points_dicts, destination_latlon, eta_models)
+
+        # Format the predicted arrival time
+        # The datetime object from predict_eta is UTC aware.
+        # Format it as "YYYY-MM-DD HH:MM:SS UTC"
+        formatted_arrival_time = prediction_result['predicted_arrival_utc'].strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        return ETAPredictionResponse(predicted_arrival_time_utc=formatted_arrival_time)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred during ETA prediction: {str(e)}")
