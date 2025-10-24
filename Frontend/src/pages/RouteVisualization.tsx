@@ -438,11 +438,31 @@ const RouteVisualization = () => {
       // Generate a simple square obstacle around the midpoint
       const obstacleSize = 0.1; // degrees
       const obstaclePoints: PointModel[] = [
-        { lat: midPoint[0] - obstacleSize, lon: midPoint[1] - obstacleSize, name: "Obstacle_BL" },
-        { lat: midPoint[0] + obstacleSize, lon: midPoint[1] - obstacleSize, name: "Obstacle_TL" },
-        { lat: midPoint[0] + obstacleSize, lon: midPoint[1] + obstacleSize, name: "Obstacle_TR" },
-        { lat: midPoint[0] - obstacleSize, lon: midPoint[1] + obstacleSize, name: "Obstacle_BR" },
-        { lat: midPoint[0] - obstacleSize, lon: midPoint[1] - obstacleSize, name: "Obstacle_BL" }, // Close the polygon
+        {
+          lat: midPoint[0] - obstacleSize,
+          lon: midPoint[1] - obstacleSize,
+          name: "Obstacle_BL",
+        },
+        {
+          lat: midPoint[0] + obstacleSize,
+          lon: midPoint[1] - obstacleSize,
+          name: "Obstacle_TL",
+        },
+        {
+          lat: midPoint[0] + obstacleSize,
+          lon: midPoint[1] + obstacleSize,
+          name: "Obstacle_TR",
+        },
+        {
+          lat: midPoint[0] - obstacleSize,
+          lon: midPoint[1] + obstacleSize,
+          name: "Obstacle_BR",
+        },
+        {
+          lat: midPoint[0] - obstacleSize,
+          lon: midPoint[1] - obstacleSize,
+          name: "Obstacle_BL",
+        }, // Close the polygon
       ];
 
       setObstaclePolygon(obstaclePoints);
@@ -457,7 +477,7 @@ const RouteVisualization = () => {
       const response = await getDStarLiteRoute(requestBody);
 
       if (response.d_star_lite_path.length > 0) {
-        setDStarLitePath(response.d_star_lite_path.map(p => [p.lat, p.lon]));
+        setDStarLitePath(response.d_star_lite_path.map((p) => [p.lat, p.lon]));
         toast({
           title: "Reroute Successful",
           description: "D* Lite path generated to avoid obstacle.",
@@ -465,7 +485,8 @@ const RouteVisualization = () => {
       } else {
         toast({
           title: "Reroute Failed",
-          description: response.message || "Could not find a D* Lite reroute path.",
+          description:
+            response.message || "Could not find a D* Lite reroute path.",
           variant: "destructive",
         });
       }
@@ -580,96 +601,7 @@ const RouteVisualization = () => {
         <section className="py-12">
           <div className="container mx-auto px-4">
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-              {/* Map - Takes 2/3 width on large screens */}
-              <Card className="xl:col-span-2 border-2 shadow-lg">
-                <CardHeader>
-                  <div className="flex items-center gap-2">
-                    <Navigation className="h-5 w-5 text-primary" />
-                    <CardTitle>Route Map</CardTitle>
-                  </div>
-                  <CardDescription>
-                    Interactive map showing your optimized route
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <RouteMap
-                    ports={portsForMap}
-                    routes={[
-                      {
-                        id: "astar",
-                        start: startPoint,
-                        end: portsForMap[portsForMap.length - 1],
-                        path: optimizedRouteData.fullAstarPath,
-                        distance: totalDistance,
-                        fuelConsumption: totalFuel,
-                        color: "red", // Original A* path in red
-                      },
-                      ...(dStarLitePath
-                        ? [
-                            {
-                              id: "dstar",
-                              start: currentLocationState || startPoint, // D* Lite starts from current location or startPoint
-                              end: portsForMap[portsForMap.length - 1], // Ends at final destination
-                              path: dStarLitePath,
-                              color: "blue", // D* Lite path in blue
-                            },
-                          ]
-                        : []),
-                    ]}
-                    currentLocation={currentLocationState}
-                    obstaclePolygon={obstaclePolygon} // Pass obstacle polygon to map
-                    onMapClick={handleMapClick} // Enable map clicks for D* Lite
-                  />
-                </CardContent>
-
-              </Card>
-
-              {/* Suggested DRL Actions */}
-              <Card className="border-2 shadow-lg mt-8 xl:col-span-2">
-                <CardHeader>
-                  <CardTitle className="text-lg">
-                    Suggested DRL Actions
-                  </CardTitle>
-                  <CardDescription>
-                    Next recommended speed and heading from the DRL agent.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/10">
-                    <div className="p-2 rounded-lg bg-primary/10">
-                      <Ship className="h-5 w-5 text-primary" />
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Suggested Speed
-                      </p>
-                      <p className="text-xl font-bold">
-                        {suggestedSpeed !== null
-                          ? `${suggestedSpeed.toFixed(1)} knots`
-                          : "-- knots"}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-accent/5 border border-accent/10">
-                    <div className="p-2 rounded-lg bg-accent/10">
-                      <Navigation className="h-5 w-5 text-accent" />
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Suggested Heading
-                      </p>
-                      <p className="text-xl font-bold">
-                        {suggestedHeading !== null
-                          ? `${suggestedHeading.toFixed(1)}°`
-                          : "-- °"}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Metrics & Summary - Takes 1/3 width on large screens */}
+              {/* Metrics & Summary - Takes 1/3 width on large screens, placed first */}
               <div className="space-y-6">
                 {/* Key Metrics */}
                 <Card className="border-2 shadow-lg">
@@ -742,7 +674,9 @@ const RouteVisualization = () => {
                 {/* Reroute with Obstacle Button */}
                 <Button
                   onClick={handleGenerateObstacleAndReroute}
-                  disabled={isLoading || !optimizedRouteData?.fullAstarPath.length}
+                  disabled={
+                    isLoading || !optimizedRouteData?.fullAstarPath.length
+                  }
                   className="w-full h-12 text-lg bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-600 hover:to-teal-700 transition-all shadow-lg mt-6"
                 >
                   Generate Obstacle & Reroute
@@ -838,6 +772,93 @@ const RouteVisualization = () => {
                   </Card>
                 )}
               </div>
+
+              {/* Map - Takes 2/3 width on large screens */}
+              <Card className="xl:col-span-2 border-2 shadow-lg">
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Navigation className="h-5 w-5 text-primary" />
+                    <CardTitle>Route Map</CardTitle>
+                  </div>
+                  <CardDescription>
+                    Interactive map showing your optimized route
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <RouteMap
+                    ports={portsForMap}
+                    routes={[
+                      {
+                        id: "astar",
+                        start: startPoint,
+                        end: portsForMap[portsForMap.length - 1],
+                        path: optimizedRouteData.fullAstarPath,
+                        distance: totalDistance,
+                        fuelConsumption: totalFuel,
+                        color: "red", // Original A* path in red
+                      },
+                      ...(dStarLitePath
+                        ? [
+                            {
+                              id: "dstar",
+                              start: currentLocationState || startPoint, // D* Lite starts from current location or startPoint
+                              end: portsForMap[portsForMap.length - 1], // Ends at final destination
+                              path: dStarLitePath,
+                              color: "blue", // D* Lite path in blue
+                            },
+                          ]
+                        : []),
+                    ]}
+                    currentLocation={currentLocationState}
+                    obstaclePolygon={obstaclePolygon} // Pass obstacle polygon to map
+                    onMapClick={handleMapClick} // Enable map clicks for D* Lite
+                  />
+                </CardContent>
+                {/* Suggested DRL Actions */}
+                <Card className="border-2 shadow-lg mt-8 xl:col-span-2 max-w-[95%] mx-auto">
+                  <CardHeader>
+                    <CardTitle className="text-lg">
+                      Suggested DRL Actions
+                    </CardTitle>
+                    <CardDescription>
+                      Next recommended speed and heading from the DRL agent.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/10">
+                      <div className="p-2 rounded-lg bg-primary/10">
+                        <Ship className="h-5 w-5 text-primary" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          Suggested Speed
+                        </p>
+                        <p className="text-xl font-bold">
+                          {suggestedSpeed !== null
+                            ? `${suggestedSpeed.toFixed(1)} knots`
+                            : "-- knots"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-accent/5 border border-accent/10">
+                      <div className="p-2 rounded-lg bg-accent/10">
+                        <Navigation className="h-5 w-5 text-accent" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          Suggested Heading
+                        </p>
+                        <p className="text-xl font-bold">
+                          {suggestedHeading !== null
+                            ? `${suggestedHeading.toFixed(1)}°`
+                            : "-- °"}
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </Card>
             </div>
           </div>
         </section>

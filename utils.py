@@ -591,8 +591,8 @@ def get_optimal_path_route_for_api(vessel_data, start_point_latlon, destination_
     return optimal_path_route_latlon, G_tsp_sequencing, unreachable_destinations # Return G_tsp_sequencing for now, as G_final_route is not built here
 
 def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destination_points_latlon, 
-                                                min_lon_region=99, max_lon_region=190, 
-                                                min_lat_region=0, max_lat_region=15, 
+                                                min_lon_region=99, max_lon_region=215, 
+                                                min_lat_region=-5, max_lat_region=20, 
                                                 cell_size_m=10000, landmark_interval_km=100,
                                                 search_range_km=3): # Added search_range_km
     """
@@ -1041,8 +1041,8 @@ def create_astar_grid(full_astar_path_latlon, grid_params):
     return astar_grid.tolist()
 
 def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, random_state=50, 
-                                           min_lon_region=99, max_lon_region=190, 
-                                           min_lat_region=0, max_lat_region=15, 
+                                           min_lon_region=99, max_lon_region=215, 
+                                           min_lat_region=-5, max_lat_region=20, 
                                            cell_size_m=10000, landmark_interval_km=100):
     """
     High-level function to generate an optimized route using TSP and A*,

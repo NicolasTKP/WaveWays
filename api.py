@@ -216,8 +216,8 @@ async def suggest_route_sequence(request: SuggestRouteSequenceRequest):
 
         # For TSP, we need bathymetry and weather grids, but these are static for the region
         # We'll use default region parameters for now, or load them from a config if available
-        min_lon_region, max_lon_region = 99, 190
-        min_lat_region, max_lat_region = 0, 15
+        min_lon_region, max_lon_region = 99, 215
+        min_lat_region, max_lat_region = -5, 20
         cell_size_m = 10000 # 10km resolution
 
         ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")

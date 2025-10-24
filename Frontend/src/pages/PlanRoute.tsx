@@ -232,7 +232,7 @@ const PlanRoute = () => {
         {/* Configuration Section */}
         <section className="py-16 bg-muted/30">
           <div className="container mx-auto px-4">
-            <div className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="max-w-[60dvw] mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
               {/* Route Planner Card */}
               <Card className="border-2 shadow-lg">
                 <Collapsible
