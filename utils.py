@@ -591,7 +591,7 @@ def get_optimal_path_route_for_api(vessel_data, start_point_latlon, destination_
     return optimal_path_route_latlon, G_tsp_sequencing, unreachable_destinations # Return G_tsp_sequencing for now, as G_final_route is not built here
 
 def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destination_points_latlon, 
-                                                min_lon_region=99, max_lon_region=150, 
+                                                min_lon_region=99, max_lon_region=190, 
                                                 min_lat_region=0, max_lat_region=15, 
                                                 cell_size_m=10000, landmark_interval_km=100,
                                                 search_range_km=8): # Added search_range_km
@@ -640,7 +640,7 @@ def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destinati
         lat, lon = original_point
         depth = get_bathymetry_depth(lat, lon, elevation_data, grid_params)
         print(f"Depth: {depth} {lat}, {lon}")
-        if depth > -vessel_height_underwater_calc: # Point is on land or too shallow
+        if depth >= -vessel_height_underwater_calc: # Point is on land or too shallow
             original_grid = lat_lon_to_grid_coords(lat, lon, *grid_params)
             
             # Search for closest sea node within search_range_km
@@ -1041,7 +1041,7 @@ def create_astar_grid(full_astar_path_latlon, grid_params):
     return astar_grid.tolist()
 
 def generate_optimized_route_and_landmarks(vessel_data, num_sample_ports=3, random_state=50, 
-                                           min_lon_region=99, max_lon_region=150, 
+                                           min_lon_region=99, max_lon_region=190, 
                                            min_lat_region=0, max_lat_region=15, 
                                            cell_size_m=10000, landmark_interval_km=100):
     """
