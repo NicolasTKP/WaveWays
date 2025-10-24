@@ -9,6 +9,8 @@ import pandas as pd
 import xarray as xr
 import geopandas as gpd
 from shapely.geometry import Point, Polygon, LineString
+import matplotlib.pyplot as plt # Import matplotlib for plotting
+import os # Import os for path manipulation
 
 # Import DRL components and utilities
 from training_codes.DRL_train import Actor, DDPG, MarineEnv
@@ -84,6 +86,8 @@ class InitializeMultiLegSimulationResponse(BaseModel):
     initial_vessel_state: Dict[str, float]
     full_astar_path: List[List[float]]
     landmark_points: List[List[float]]
+    unreachable_destinations: List[Dict[str, Any]] = [] # New field for unreachable points
+    warnings: List[str] = [] # New field for general warnings
 
 class GetNextActionRequest(BaseModel):
     session_id: str
@@ -114,6 +118,76 @@ class DStarLiteRouteResponse(BaseModel):
     session_id: str
     d_star_lite_path: List[PointModel]
     message: str = "OK"
+
+class SaveRouteVisualizationRequest(BaseModel):
+    session_id: str
+
+class SaveRouteVisualizationResponse(BaseModel):
+    image_path: str
+    message: str
+
+def _plot_route_with_bathymetry(
+    session_id: str,
+    full_astar_path_latlon: List[List[float]],
+    landmark_points: List[List[float]],
+    bathymetry_maze: List[List[int]],
+    grid_params: Tuple[float, float, float, float, int, int],
+    weather_penalty_grid: List[List[float]],
+    output_dir: str = "output"
+) -> str:
+    """
+    Generates and saves a visualization of the route with bathymetry.
+    Similar to plot_simulation_episode in DRL_train.py.
+    """
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells = grid_params
+    max_lon_astar = min_lon + num_lon_cells * lon_step
+    max_lat_astar = min_lat + num_lat_cells * lat_step
+
+    # Plot grids
+    cmap_maze = plt.get_cmap('Greys_r', 2)
+    ax.imshow(bathymetry_maze, extent=[min_lon, max_lon_astar, min_lat, max_lat_astar],
+             origin='lower', cmap=cmap_maze, interpolation='nearest', alpha=0.5)
+
+    # Plot A* path
+    if full_astar_path_latlon:
+        astar_lons = [p[1] for p in full_astar_path_latlon]
+        astar_lats = [p[0] for p in full_astar_path_latlon]
+        ax.plot(astar_lons, astar_lats, 'red', linewidth=1, linestyle='--', label="A* Path", alpha=0.7)
+
+    # Plot landmarks
+    landmark_lons = [p[1] for p in landmark_points]
+    landmark_lats = [p[0] for p in landmark_points]
+    ax.scatter(landmark_lons, landmark_lats, color='cyan', s=80, marker='o', 
+              edgecolor='black', label="Landmarks", zorder=5)
+
+    # Highlight the first landmark
+    if landmark_points:
+        first_landmark_lon = landmark_points[0][1]
+        first_landmark_lat = landmark_points[0][0]
+        ax.scatter(first_landmark_lon, first_landmark_lat, color='yellow', s=150, 
+                   marker='*', edgecolor='red', label="Start Landmark", zorder=7)
+    
+    ax.set_xlim(min_lon, max_lon_astar)
+    ax.set_ylim(min_lat, max_lat_astar)
+    plt.title(f"Route Visualization for Session {session_id}")
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    ax.legend(loc='upper right', fontsize=8)
+    plt.grid(True, linestyle=':', alpha=0.4)
+    plt.tight_layout()
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Use a unique filename
+    filename = f"route_visualization_{session_id}.png"
+    filepath = os.path.join(output_dir, filename)
+    plt.savefig(filepath, dpi=100)
+    plt.close(fig)
+    
+    return filepath
 
 # --- API Endpoints ---
 
@@ -263,21 +337,51 @@ async def initialize_multi_leg_simulation(request: InitializeMultiLegSimulationR
         weather_penalty_grid = session_data["weather_penalty_grid"]
 
         # Combine start point with sequenced destinations for A* path generation
-        full_sequenced_points = [(request.start_point.lat, request.start_point.lon)] + \
-                                [(d.lat, d.lon) for d in request.sequenced_destinations]
+        # Combine start point with sequenced destinations for A* path generation
+        # The generate_multi_leg_astar_path_and_landmarks function will now handle bathymetry checks
+        # and adjustments for individual points.
+        full_sequenced_points_for_astar = [(request.start_point.lat, request.start_point.lon)] + \
+                                          [(d.lat, d.lon) for d in request.sequenced_destinations]
 
         # Generate full A* path and landmarks for the entire multi-leg route
-        full_astar_path_latlon, landmark_points, _, _, _ = generate_multi_leg_astar_path_and_landmarks(
-            initial_vessel_state_for_env, # Pass the vessel data for height calculation etc.
-            full_sequenced_points,
-            min_lon_region=grid_params[1], max_lon_region=grid_params[1] + grid_params[4] * grid_params[3],
-            min_lat_region=grid_params[0], max_lat_region=grid_params[0] + grid_params[5] * grid_params[2],
-            cell_size_m=10000, # Consistent with initial grid generation
-            landmark_interval_km=20 # Consistent with DRL_train.py
-        )
+        full_astar_path_latlon, landmark_points, _, _, _, unreachable_destinations_from_astar, adjusted_points_from_astar = \
+            generate_multi_leg_astar_path_and_landmarks(
+                initial_vessel_state_for_env, # Pass the vessel data for height calculation etc.
+                full_sequenced_points_for_astar,
+                min_lon_region=grid_params[1], max_lon_region=grid_params[1] + grid_params[4] * grid_params[3],
+                min_lat_region=grid_params[0], max_lat_region=grid_params[0] + grid_params[5] * grid_params[2],
+                cell_size_m=10000, # Consistent with initial grid generation
+                landmark_interval_km=20, # Consistent with DRL_train.py
+                search_range_km=3 # 3km range for nearest sea node search
+            )
 
-        if full_astar_path_latlon is None or not landmark_points:
-            raise HTTPException(status_code=500, detail="Failed to generate A* path or landmarks for the multi-leg route.")
+        response_warnings = []
+        if adjusted_points_from_astar:
+            for adj_p in adjusted_points_from_astar:
+                response_warnings.append(
+                    f"Warning: Point ({adj_p['original_point']['lat']:.4f}, {adj_p['original_point']['lon']:.4f}) was on land and adjusted to nearest sea node ({adj_p['adjusted_point']['lat']:.4f}, {adj_p['adjusted_point']['lon']:.4f})."
+                )
+
+        if not full_astar_path_latlon or not landmark_points:
+            # If no full path could be generated at all, raise an error, but include any unreachable points found
+            if not unreachable_destinations_from_astar:
+                raise HTTPException(status_code=500, detail="Failed to generate A* path or landmarks for the multi-leg route.")
+            else:
+                # If some points were unreachable, but no full path, return a partial response with errors
+                return InitializeMultiLegSimulationResponse(
+                    session_id=request.session_id,
+                    message="Multi-leg simulation initialized with issues. Some destinations were unreachable.",
+                    initial_vessel_state={
+                        "lat": request.start_point.lat,
+                        "lon": request.start_point.lon,
+                        "speed": request.initial_speed,
+                        "heading": request.initial_heading
+                    },
+                    full_astar_path=[], # No full path
+                    landmark_points=[], # No landmarks
+                    unreachable_destinations=unreachable_destinations_from_astar,
+                    warnings=response_warnings
+                )
 
         # Initialize DRL environment
         sequence_length = 3 # Consistent with DRL_train.py
@@ -321,7 +425,9 @@ async def initialize_multi_leg_simulation(request: InitializeMultiLegSimulationR
                 "heading": request.initial_heading
             },
             full_astar_path=full_astar_path_latlon,
-            landmark_points=landmark_points
+            landmark_points=landmark_points,
+            unreachable_destinations=unreachable_destinations_from_astar,
+            warnings=response_warnings
         )
     except HTTPException as e:
         raise e

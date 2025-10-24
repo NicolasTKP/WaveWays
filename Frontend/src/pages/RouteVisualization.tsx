@@ -52,6 +52,7 @@ interface OptimizedRouteData {
   totalFuel?: number;
   totalTime?: number;
   warnings?: string[];
+  unreachableDestinations?: { lat: number; lon: number; reason: string }[];
 }
 
 const RouteVisualization = () => {
@@ -97,19 +98,6 @@ const RouteVisualization = () => {
     return R * c;
   };
 
-  // Convert sequencedDestinations (PointModel[]) to Port[] for RouteMap
-  const portsForMap: Port[] = [
-    startPoint,
-    ...sequencedDestinations.map((p, index) => ({
-      id: `seq-${index}`,
-      name: `Destination ${index + 1}`,
-      lat: p.lat,
-      lng: p.lon,
-      country: "Unknown",
-      coordinates: `${p.lat},${p.lon}`,
-    })),
-  ];
-
   useEffect(() => {
     if (!sessionID || !vesselConfig || !sequencedDestinations || !startPoint) {
       toast({
@@ -144,10 +132,21 @@ const RouteVisualization = () => {
 
         const response = await initializeMultiLegSimulation(requestBody);
 
+        // Filter out unreachable destinations from the sequencedDestinations
+        const reachableDestinations = sequencedDestinations.filter(
+          (dest) =>
+            !response.unreachable_destinations.some(
+              (unreachable) =>
+                unreachable.lat === dest.lat && unreachable.lon === dest.lon
+            )
+        );
+
         setOptimizedRouteData({
           fullAstarPath: response.full_astar_path,
           landmarkPoints: response.landmark_points,
           initialVesselState: response.initial_vessel_state,
+          unreachableDestinations: response.unreachable_destinations,
+          warnings: response.warnings,
         });
         setCurrentLocationState({
           id: "current",
@@ -158,10 +157,40 @@ const RouteVisualization = () => {
           coordinates: `${response.initial_vessel_state.lat},${response.initial_vessel_state.lon}`,
         });
 
-        toast({
-          title: "Simulation Initialized",
-          description: "Multi-leg route simulation is ready.",
+        // Display warnings and unreachable destinations as toasts
+        response.warnings.forEach((warning) => {
+          toast({
+            title: "Route Warning",
+            description: warning,
+            variant: "default", // Use default for warnings, not destructive
+          });
         });
+
+        response.unreachable_destinations.forEach((unreachable) => {
+          toast({
+            title: "Unreachable Destination",
+            description: `Destination at Lat: ${unreachable.lat.toFixed(
+              4
+            )}, Lng: ${unreachable.lon.toFixed(4)} is unreachable. Reason: ${
+              unreachable.reason
+            }`,
+            variant: "destructive",
+          });
+        });
+
+        if (response.full_astar_path.length > 0) {
+          toast({
+            title: "Simulation Initialized",
+            description: "Multi-leg route simulation is ready.",
+          });
+        } else {
+          toast({
+            title: "Simulation Initialized with Issues",
+            description:
+              "No complete route could be generated. Check unreachable destinations.",
+            variant: "destructive",
+          });
+        }
       } catch (error: any) {
         toast({
           title: "Error Initializing Simulation",
@@ -185,6 +214,28 @@ const RouteVisualization = () => {
     toast,
   ]);
 
+  // Convert sequencedDestinations (PointModel[]) to Port[] for RouteMap
+  // Filter out unreachable destinations from the original sequencedDestinations
+  const filteredSequencedDestinations = sequencedDestinations.filter(
+    (dest) =>
+      !optimizedRouteData?.unreachableDestinations?.some(
+        (unreachable) =>
+          unreachable.lat === dest.lat && unreachable.lon === dest.lon
+      )
+  );
+
+  const portsForMap: Port[] = [
+    startPoint,
+    ...filteredSequencedDestinations.map((p, index) => ({
+      id: `seq-${index}`,
+      name: p.name || `Destination ${index + 1}`, // Use name from PointModel if available
+      lat: p.lat,
+      lng: p.lon,
+      country: "Unknown",
+      coordinates: `${p.lat},${p.lon}`,
+    })),
+  ];
+
   // Calculate total distance, fuel, time once optimizedRouteData is available
   useEffect(() => {
     if (optimizedRouteData?.fullAstarPath && vesselConfig) {
@@ -204,16 +255,17 @@ const RouteVisualization = () => {
         (calculatedTravelTime / 24) * vesselConfig.fuel_consumption_t_per_day;
       setTotalFuel(calculatedFuelConsumption);
 
+      const allWarnings = [...(optimizedRouteData.warnings || [])]; // Start with backend warnings
+
       if (
         calculatedFuelConsumption >
         vesselConfig.fuel_tank_capacity_t - vesselConfig.safety_fuel_margin_t
       ) {
-        setWarnings([
-          "⚠️ Fuel capacity may be insufficient for this route. Consider adding refueling stops.",
-        ]);
-      } else {
-        setWarnings([]);
+        allWarnings.push(
+          "⚠️ Fuel capacity may be insufficient for this route. Consider adding refueling stops."
+        );
       }
+      setWarnings(allWarnings);
     }
   }, [optimizedRouteData, vesselConfig]);
 
@@ -242,7 +294,12 @@ const RouteVisualization = () => {
     );
   }
 
-  if (!optimizedRouteData) {
+  // If optimizedRouteData is null AND there are no unreachable destinations, then it's a full failure
+  if (
+    !optimizedRouteData ||
+    (!optimizedRouteData.fullAstarPath.length &&
+      !optimizedRouteData.unreachableDestinations?.length)
+  ) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
@@ -298,7 +355,7 @@ const RouteVisualization = () => {
         </section>
 
         {/* Warnings */}
-        {warnings.length > 0 && (
+        {/* {warnings.length > 0 && (
           <section className="py-6 bg-destructive/5 border-b border-destructive/10">
             <div className="container mx-auto px-4">
               {warnings.map((warning, i) => (
@@ -314,7 +371,7 @@ const RouteVisualization = () => {
               ))}
             </div>
           </section>
-        )}
+        )} */}
 
         {/* Main Content - All Visible Together */}
         <section className="py-12">

@@ -68,6 +68,8 @@ export interface InitializeMultiLegSimulationResponse {
   };
   full_astar_path: [number, number][];
   landmark_points: [number, number][];
+  unreachable_destinations: { lat: number; lon: number; reason: string; }[];
+  warnings: string[];
 }
 
 export const suggestRouteSequence = async (

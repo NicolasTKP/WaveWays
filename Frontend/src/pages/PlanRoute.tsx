@@ -554,10 +554,14 @@ const PlanRoute = () => {
                 size="lg"
                 className="w-full h-14 text-lg bg-gradient-to-r from-primary to-accent hover:from-primary/90 hover:to-accent/90 transition-all shadow-lg"
                 onClick={handleGenerateRoute}
-                disabled={selectedPorts.length < 2}
+                disabled={selectedPorts.length < 2 || isLoading}
               >
-                <Navigation className="mr-2 h-5 w-5" />
-                Generate Optimized Route
+                {isLoading ? (
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                ) : (
+                  <Navigation className="mr-2 h-5 w-5" />
+                )}
+                {isLoading ? "Generating Route..." : "Generate Optimized Route"}
               </Button>
               {selectedPorts.length < 2 && (
                 <p className="text-center text-sm text-muted-foreground mt-3">

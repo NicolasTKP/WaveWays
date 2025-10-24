@@ -593,14 +593,18 @@ def get_optimal_path_route_for_api(vessel_data, start_point_latlon, destination_
 def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destination_points_latlon, 
                                                 min_lon_region=99, max_lon_region=120, 
                                                 min_lat_region=0, max_lat_region=8, 
-                                                cell_size_m=10000, landmark_interval_km=20):
+                                                cell_size_m=10000, landmark_interval_km=20,
+                                                search_range_km=3): # Added search_range_km
     """
     Generates a combined A* path and landmark points for a given sequence of (lat, lon) destinations.
     This function assumes the sequence is already determined (e.g., by TSP or user input).
+    It also handles points on land by searching for the nearest sea node within a specified range.
+    Returns full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid,
+    unreachable_destinations, adjusted_points.
     """
     if not sequenced_destination_points_latlon or len(sequenced_destination_points_latlon) < 2:
         print("Error: At least two points (start and end) are required for multi-leg A* path generation.")
-        return None, None, None, None, None
+        return None, None, None, None, None, [], []
 
     ds_bathymetry = xr.open_dataset("data\\Bathymetry\\GEBCO_2025_sub_ice.nc")
     ds_subset_astar = ds_bathymetry.sel(
@@ -623,10 +627,53 @@ def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destinati
     )
 
     full_astar_path_latlon = []
+    unreachable_destinations = []
+    adjusted_points = []
     
-    for i in range(len(sequenced_destination_points_latlon) - 1):
-        start_point = sequenced_destination_points_latlon[i]
-        end_point = sequenced_destination_points_latlon[i+1]
+    # Create a mutable list of points to work with, as they might be adjusted
+    current_sequenced_points = list(sequenced_destination_points_latlon)
+
+    # Pre-process all points for bathymetry
+    processed_points = []
+    for idx, original_point in enumerate(current_sequenced_points):
+        lat, lon = original_point
+        depth = get_bathymetry_depth(lat, lon, elevation_data, grid_params)
+        
+        if depth >= -vessel_height_underwater_calc: # Point is on land or too shallow
+            original_grid = lat_lon_to_grid_coords(lat, lon, *grid_params)
+            
+            # Search for closest sea node within search_range_km
+            closest_sea_grid = find_closest_sea_node(original_grid, bathymetry_maze, search_range_km, grid_params)
+            
+            if closest_sea_grid and bathymetry_maze[closest_sea_grid[0]][closest_sea_grid[1]] == 0:
+                adjusted_lat, adjusted_lon = grid_coords_to_lat_lon(*closest_sea_grid, *grid_params[:4])
+                adjusted_points.append({
+                    "original_point": {"lat": lat, "lon": lon},
+                    "adjusted_point": {"lat": adjusted_lat, "lon": adjusted_lon},
+                    "reason": f"Original point on land (depth {depth:.1f}m), adjusted to nearest sea node within {search_range_km}km."
+                })
+                processed_points.append((adjusted_lat, adjusted_lon))
+                print(f"  Adjusted point {original_point} to ({adjusted_lat:.4f}, {adjusted_lon:.4f})")
+            else:
+                unreachable_destinations.append({
+                    "lat": lat, "lon": lon,
+                    "reason": f"Point on land (depth {depth:.1f}m) and no suitable sea node found within {search_range_km}km."
+                })
+                processed_points.append(None) # Mark as unreachable for path generation
+                print(f"  Point {original_point} on land, no sea node found within {search_range_km}km. Marked as unreachable.")
+        else:
+            processed_points.append(original_point) # Point is already in sea
+
+    # Filter out unreachable points for path generation
+    valid_sequenced_points = [p for p in processed_points if p is not None]
+
+    if len(valid_sequenced_points) < 2:
+        print("Error: Less than two valid points remaining after bathymetry check. Cannot generate multi-leg A* path.")
+        return None, None, None, None, None, unreachable_destinations, adjusted_points
+
+    for i in range(len(valid_sequenced_points) - 1):
+        start_point = valid_sequenced_points[i]
+        end_point = valid_sequenced_points[i+1]
 
         start_lat, start_lon = start_point[0], start_point[1]
         end_lat, end_lon = end_point[0], end_point[1]
@@ -634,39 +681,36 @@ def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destinati
         start_grid = lat_lon_to_grid_coords(start_lat, start_lon, *grid_params)
         end_grid = lat_lon_to_grid_coords(end_lat, end_lon, *grid_params)
 
-        # Adjust start/end grid if they are on land
-        if bathymetry_maze[start_grid[0]][start_grid[1]] != 0:
-            start_grid = find_closest_sea_node(start_grid, bathymetry_maze)
-            if bathymetry_maze[start_grid[0]][start_grid[1]] != 0:
-                print(f"  Error: Could not find a valid sea node for start point {start_point}. A* will likely fail.")
-
-        if bathymetry_maze[end_grid[0]][end_grid[1]] != 0:
-            end_grid = find_closest_sea_node(end_grid, bathymetry_maze)
-            if bathymetry_maze[end_grid[0]][end_grid[1]] != 0:
-                print(f"  Error: Could not find a valid sea node for end point {end_point}. A* will likely fail.")
-
         path_grid = astar(bathymetry_maze, start_grid, end_grid, weather_penalty_grid)
         
         if path_grid:
             path_latlon_segment = [grid_coords_to_lat_lon(r, c, *grid_params[:4]) for r, c in path_grid]
             full_astar_path_latlon.extend(path_latlon_segment)
         else:
-            print(f"  No A* path found between {start_point} and {end_point} (land/weather). This segment will be skipped.")
-            # Depending on desired behavior, you might want to raise an error or return None here
-            # For now, we'll continue, but the path will be incomplete.
+            print(f"  No A* path found between {start_point} and {end_point} (land/weather). This leg is unreachable.")
+            unreachable_destinations.append({
+                "lat": end_lat, "lon": end_lon,
+                "reason": f"No A* path found from ({start_lat:.4f}, {start_lon:.4f}) to ({end_lat:.4f}, {end_lon:.4f})."
+            })
+            # If a segment fails, we should ideally stop or try to reroute.
+            # For now, we'll just skip this segment and continue with the next valid one,
+            # but the full_astar_path_latlon will be incomplete.
+            # A more robust solution would involve breaking the loop and returning the partial path
+            # along with the unreachable destination.
+            # For this task, we'll let it continue and report all unreachable destinations.
 
     if not full_astar_path_latlon:
         print("Error: No A* path could be generated for the entire sequence.")
-        return None, None, None, None, None
+        return None, None, None, None, None, unreachable_destinations, adjusted_points
 
     landmark_points = generate_landmark_points(full_astar_path_latlon, interval_km=landmark_interval_km)
     if not landmark_points:
         print("No landmark points generated. Exiting.")
-        return None, None, None, None, None
+        return None, None, None, None, None, unreachable_destinations, adjusted_points
     
     print(f"Generated {len(landmark_points)} landmarks at {landmark_interval_km}km intervals for multi-leg route")
 
-    return full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid
+    return full_astar_path_latlon, landmark_points, bathymetry_maze, grid_params, weather_penalty_grid, unreachable_destinations, adjusted_points
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -882,6 +926,25 @@ def create_bathymetry_grid(ds_subset, min_lon, max_lon, min_lat, max_lat, cell_s
     )
     return grid.tolist(), grid_lats, grid_lons, lat_step, lon_step, elevation_da
 
+def get_bathymetry_depth(lat, lon, elevation_data, grid_params):
+    """
+    Retrieves the bathymetry depth for a given lat/lon point from the elevation_data.
+    Returns 0 if outside the grid or data is unavailable.
+    """
+    min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells = grid_params
+    
+    # Check if the point is within the grid boundaries
+    if not (min_lat <= lat <= min_lat + num_lat_cells * lat_step and
+            min_lon <= lon <= min_lon + num_lon_cells * lon_step):
+        return 0.0 # Outside the defined grid
+
+    row, col = lat_lon_to_grid_coords(lat, lon, min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells)
+    
+    # Ensure row and col are within the bounds of elevation_data
+    if 0 <= row < elevation_data.shape[0] and 0 <= col < elevation_data.shape[1]:
+        return elevation_data.isel(lat=row, lon=col).item()
+    return 0.0 # Fallback if coordinates are somehow out of bounds for elevation_data
+
 def lat_lon_to_grid_coords(lat, lon, min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells):
     """Converts latitude and longitude to grid (row, col) coordinates."""
     row = int((lat - min_lat) / lat_step)
@@ -896,10 +959,11 @@ def grid_coords_to_lat_lon(row, col, min_lat, min_lon, lat_step, lon_step):
     lon = min_lon + col * lon_step + lon_step / 2
     return lat, lon
 
-def find_closest_sea_node(land_grid_coords, bathymetry_maze):
+def find_closest_sea_node(land_grid_coords, bathymetry_maze, search_range_km, grid_params):
     """
-    Finds the closest non-land grid cell (sea node) to a given land grid cell.
+    Finds the closest non-land grid cell (sea node) to a given land grid cell within a specified range.
     Uses a Breadth-First Search (BFS) to explore neighbors.
+    Returns the grid coordinates of the closest sea node, or None if none found within range.
     """
     (start_row, start_col) = land_grid_coords
     rows, cols = len(bathymetry_maze), len(bathymetry_maze[0])
@@ -908,11 +972,23 @@ def find_closest_sea_node(land_grid_coords, bathymetry_maze):
     if bathymetry_maze[start_row][start_col] == 0:
         return land_grid_coords
 
-    queue = deque([(start_row, start_col)])
+    min_lat, min_lon, lat_step, lon_step, num_lat_cells, num_lon_cells = grid_params
+    
+    # Approximate max grid distance for search_range_km
+    # Using the larger of lat_step or lon_step to be conservative
+    avg_cell_size_km = (geodesic((min_lat, min_lon), (min_lat + lat_step, min_lon)).km +
+                        geodesic((min_lat, min_lon), (min_lat, min_lon + lon_step)).km) / 2
+    
+    max_grid_distance = int(search_range_km / avg_cell_size_km) + 1 # Add 1 for safety margin
+
+    queue = deque([(start_row, start_col, 0)]) # (row, col, distance_from_start_grid)
     visited = {(start_row, start_col)}
 
     while queue:
-        r, c = queue.popleft()
+        r, c, dist = queue.popleft()
+
+        if dist > max_grid_distance:
+            continue # Exceeded search range
 
         # Check neighbors
         for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]: # 4-directional movement
@@ -928,11 +1004,10 @@ def find_closest_sea_node(land_grid_coords, bathymetry_maze):
                 if bathymetry_maze[nr][nc] == 0:
                     return (nr, nc)
                 # If neighbor is land, add to queue to explore its neighbors
-                queue.append((nr, nc))
+                queue.append((nr, nc, dist + 1))
     
-    # Should ideally not happen if there's any sea around, but as a fallback
-    print(f"Warning: No sea node found around {land_grid_coords}. This might indicate an isolated landmass or error.")
-    return land_grid_coords # Return original if no sea found (will likely lead to A* failure)
+    # No sea node found within the specified range
+    return None
 
 def create_astar_grid(full_astar_path_latlon, grid_params):
     """
