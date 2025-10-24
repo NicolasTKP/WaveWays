@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Tuple
 import uuid
@@ -21,6 +22,17 @@ from d_star_lite import find_d_star_lite_route # Import the D* Lite function
 
 app = FastAPI()
 
+# Configure CORS
+origins = ["*"] # Temporarily allow all origins for debugging
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Global dictionary to store simulation states for single-user demonstration
 # In a production environment, this would be replaced by a persistent store like Redis
 simulations: Dict[str, Dict[str, Any]] = {}
@@ -39,6 +51,7 @@ ports_gdf = gpd.GeoDataFrame(
 class PointModel(BaseModel):
     lat: float
     lon: float
+    name: str = "" # Add a name field, default to empty string
 
 class VesselConfig(BaseModel):
     speed_knots: float = vessel["speed_knots"]
@@ -47,8 +60,8 @@ class VesselConfig(BaseModel):
     safety_fuel_margin_t: float = vessel["safety_fuel_margin_t"]
 
 class SuggestRouteSequenceRequest(BaseModel):
-    start_point: PointModel
-    destinations: List[PointModel]
+    start_point: PointModel # This PointModel should now include the name
+    destinations: List[PointModel] # These PointModels should now include names
     is_cycle_route: bool = False
     vessel_config: VesselConfig
 
@@ -119,6 +132,8 @@ async def suggest_route_sequence(request: SuggestRouteSequenceRequest):
             "fuel_tank_remaining_t": request.vessel_config.fuel_tank_capacity_t # Assume full tank for initial check
         }
 
+        # Store original PointModel objects with names for later lookup
+        original_points_with_names = [request.start_point] + request.destinations
         start_point_latlon = (request.start_point.lat, request.start_point.lon)
         destination_points_latlon = [(d.lat, d.lon) for d in request.destinations]
 
@@ -177,24 +192,40 @@ async def suggest_route_sequence(request: SuggestRouteSequenceRequest):
         session_id = str(uuid.uuid4())
         simulations[session_id] = {
             "vessel_config": request.vessel_config.dict(),
-            "start_point": start_point_latlon,
-            "destinations": destination_points_latlon,
+            "start_point": request.start_point, # Store the full PointModel with name
+            "destinations": request.destinations, # Store full PointModels with names
             "is_cycle_route": request.is_cycle_route,
             "bathymetry_maze": bathymetry_maze,
             "grid_params": grid_params,
             "weather_penalty_grid": weather_penalty_grid,
-            "sequenced_destinations": suggested_sequence_latlon, # Store the suggested sequence
+            "sequenced_destinations_latlon": suggested_sequence_latlon, # Store the suggested sequence as lat/lon tuples
             "full_astar_path_latlon": None, # Will be filled by next API
             "landmark_points": None, # Will be filled by next API
             "marine_env": None,
             "ddpg_agent": None,
             "current_leg_idx": 0,
-            "current_landmark_idx": 0
+            "current_landmark_idx": 0,
+            "original_points_with_names": original_points_with_names # Store for lookup
         }
+
+        # Reconstruct suggested_sequence with names
+        suggested_sequence_with_names: List[PointModel] = []
+        for lat, lon in suggested_sequence_latlon:
+            # Find the matching original PointModel by lat/lon
+            matched_point = next(
+                (p for p in original_points_with_names if p.lat == lat and p.lon == lon),
+                None
+            )
+            if matched_point:
+                suggested_sequence_with_names.append(matched_point)
+            else:
+                # Fallback for points not directly matching (e.g., intermediate points if any)
+                suggested_sequence_with_names.append(PointModel(lat=lat, lon=lon, name=f"Lat {lat:.4f}, Lon {lon:.4f}"))
+
 
         return SuggestedRouteSequenceResponse(
             session_id=session_id,
-            suggested_sequence=[PointModel(lat=p[0], lon=p[1]) for p in suggested_sequence_latlon],
+            suggested_sequence=suggested_sequence_with_names,
             unreachable_destinations=unreachable_formatted
         )
     except Exception as e:

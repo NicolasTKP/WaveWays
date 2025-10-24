@@ -105,14 +105,6 @@ export const RouteMap = ({
           onMapClick(lat, lng);
         }}
       >
-        {/* Current vessel marker */}
-        {currentLocation && (
-          <Marker
-            key="current-location"
-            position={{ lat: currentLocation.lat, lng: currentLocation.lng }}
-            title={`You Are Here`}  // optional tooltip
-          />
-        )}
 
         {/* Ports */}
         {ports.map((port, i) => (
