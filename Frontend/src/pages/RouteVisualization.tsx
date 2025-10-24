@@ -29,6 +29,8 @@ import {
   initializeMultiLegSimulation,
   PointModel,
   VesselConfig,
+  getNextAction, // Import getNextAction
+  GetNextActionResponse, // Import GetNextActionResponse
 } from "@/services/routeService";
 
 interface RouteVisualizationState {
@@ -65,7 +67,7 @@ const RouteVisualization = () => {
 
   const [optimizedRouteData, setOptimizedRouteData] =
     useState<OptimizedRouteData | null>(null);
-  const [isCalculating, setIsCalculating] = useState(true);
+  const [isLoading, setIsLoading] = useState(true); // Changed from isCalculating
 
   // The current location will be the startPoint initially, then updated by DRL simulation
   const [currentLocationState, setCurrentLocationState] = useState<Port | null>(
@@ -75,6 +77,18 @@ const RouteVisualization = () => {
   const [totalFuel, setTotalFuel] = useState<number>(0);
   const [totalTime, setTotalTime] = useState<number>(0);
   const [warnings, setWarnings] = useState<string[]>([]);
+
+  // New states for DRL simulation
+  const [suggestedSpeed, setSuggestedSpeed] = useState<number | null>(null);
+  const [suggestedHeading, setSuggestedHeading] = useState<number | null>(null);
+  const [currentVesselSpeed, setCurrentVesselSpeed] = useState<number | null>(
+    null
+  );
+  const [currentVesselHeading, setCurrentVesselHeading] = useState<
+    number | null
+  >(null);
+  const [isSimulationRunning, setIsSimulationRunning] = useState(false);
+  const [simulationDone, setSimulationDone] = useState(false);
 
   // Helper to convert degrees to radians
   const toRad = (deg: number) => deg * (Math.PI / 180);
@@ -99,6 +113,84 @@ const RouteVisualization = () => {
     return R * c;
   };
 
+  // Helper to generate random initial speed and heading
+  const generateRandomInitialVesselState = (maxSpeed: number) => {
+    const randomSpeed = Math.random() * (maxSpeed * 0.5) + maxSpeed * 0.5; // 50-100% of max speed
+    const randomHeading = Math.random() * 360; // 0-359 degrees
+    return { speed: randomSpeed, heading: randomHeading };
+  };
+
+  // Function to call get_next_action API
+  const handleGetNextAction = async (
+    lat: number,
+    lon: number,
+    speed: number,
+    heading: number
+  ) => {
+    if (!sessionID) {
+      toast({
+        title: "Error",
+        description: "Session ID is missing for next action.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const requestBody = {
+        session_id: sessionID,
+        current_lat: lat,
+        current_lon: lon,
+        current_speed: speed,
+        current_heading: heading,
+      };
+      const response: GetNextActionResponse = await getNextAction(requestBody);
+
+      setSuggestedSpeed(response.new_speed);
+      setSuggestedHeading(response.new_heading);
+      setCurrentVesselSpeed(response.new_speed); // Update for next step
+      setCurrentVesselHeading(response.new_heading); // Update for next step
+      setSimulationDone(response.done);
+
+      // Update current location state with new lat/lon from API
+      setCurrentLocationState({
+        id: "current",
+        name: "Current Position",
+        lat: response.new_lat,
+        lng: response.new_lon,
+        country: "Ocean",
+        coordinates: `${response.new_lat},${response.new_lon}`,
+      });
+
+      toast({
+        title: "Next Action Suggested",
+        description: `Speed: ${response.new_speed.toFixed(
+          1
+        )} knots, Heading: ${response.new_heading.toFixed(1)}°`,
+      });
+
+      if (response.done) {
+        toast({
+          title: "Simulation Complete",
+          description:
+            "The vessel has reached its destination or run out of fuel.",
+          variant: "default", // Changed from "success" to "default"
+        });
+        setIsSimulationRunning(false);
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error Getting Next Action",
+        description:
+          error.message || "Failed to get next action from DRL agent.",
+        variant: "destructive",
+      });
+      setIsSimulationRunning(false);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!sessionID || !vesselConfig || !sequencedDestinations || !startPoint) {
       toast({
@@ -111,7 +203,7 @@ const RouteVisualization = () => {
     }
 
     const initializeSimulation = async () => {
-      setIsCalculating(true);
+      setIsLoading(true); // Changed from setIsCalculating
       try {
         const requestBody = {
           session_id: sessionID,
@@ -121,8 +213,8 @@ const RouteVisualization = () => {
             name: startPoint.name, // Include the name property
           },
           sequenced_destinations: sequencedDestinations, // Already PointModel[] with name
-          initial_speed: vesselConfig.speed_knots,
-          initial_heading: 0, // Assuming initial heading is 0 for now
+          initial_speed: vesselConfig.speed_knots, // Initial speed for env setup
+          initial_heading: 0, // Initial heading for env setup
           vessel_config: {
             speed_knots: vesselConfig.speed_knots,
             fuel_consumption_t_per_day: vesselConfig.fuel_consumption_t_per_day,
@@ -132,6 +224,13 @@ const RouteVisualization = () => {
         };
 
         const response = await initializeMultiLegSimulation(requestBody);
+
+        // Generate random initial speed and heading for the first DRL step
+        const { speed: randomInitialSpeed, heading: randomInitialHeading } =
+          generateRandomInitialVesselState(vesselConfig.speed_knots);
+
+        setCurrentVesselSpeed(randomInitialSpeed);
+        setCurrentVesselHeading(randomInitialHeading);
 
         // Filter out unreachable destinations from the sequencedDestinations
         const reachableDestinations = sequencedDestinations.filter(
@@ -158,6 +257,16 @@ const RouteVisualization = () => {
           country: "Ocean",
           coordinates: `${response.initial_vessel_state.lat},${response.initial_vessel_state.lon}`,
         });
+
+        // Automatically trigger the first DRL action after initialization
+        if (response.full_astar_path.length > 0) {
+          handleGetNextAction(
+            response.initial_vessel_state.lat,
+            response.initial_vessel_state.lon,
+            randomInitialSpeed,
+            randomInitialHeading
+          );
+        }
 
         // Display warnings and unreachable destinations as toasts
         response.warnings.forEach((warning) => {
@@ -202,7 +311,7 @@ const RouteVisualization = () => {
         });
         navigate("/plan-route");
       } finally {
-        setIsCalculating(false);
+        setIsLoading(false); // Changed from setIsCalculating
       }
     };
 
@@ -214,6 +323,8 @@ const RouteVisualization = () => {
     startPoint,
     navigate,
     toast,
+    // Add handleGetNextAction to dependencies if it's stable, or memoize it
+    // For now, it's fine as it's defined outside the useEffect and uses stable state setters
   ]);
 
   // Convert sequencedDestinations (PointModel[]) to Port[] for RouteMap
@@ -272,15 +383,38 @@ const RouteVisualization = () => {
   }, [optimizedRouteData, vesselConfig]);
 
   const handleMapClick = (lat: number, lng: number) => {
-    // This function will be used for D* Lite rerouting later
-    // For now, just log or show a toast
+    // Log or show a toast with clicked coordinates
     toast({
       title: "Map Clicked",
       description: `Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`,
     });
+    // Trigger handleNextStep on map click
+    handleNextStep();
   };
 
-  if (isCalculating) {
+  const handleNextStep = () => {
+    if (
+      currentLocationState &&
+      currentVesselSpeed !== null &&
+      currentVesselHeading !== null
+    ) {
+      handleGetNextAction(
+        currentLocationState.lat,
+        currentLocationState.lng,
+        currentVesselSpeed,
+        currentVesselHeading
+      );
+    } else {
+      toast({
+        title: "Simulation Not Ready",
+        description: "Please wait for initialization or check for errors.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  if (isLoading) {
+    // Changed from isCalculating
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
@@ -406,6 +540,52 @@ const RouteVisualization = () => {
                     onMapClick={handleMapClick} // Enable map clicks for D* Lite
                   />
                 </CardContent>
+
+              </Card>
+
+              {/* Suggested DRL Actions */}
+              <Card className="border-2 shadow-lg mt-8 xl:col-span-2">
+                <CardHeader>
+                  <CardTitle className="text-lg">
+                    Suggested DRL Actions
+                  </CardTitle>
+                  <CardDescription>
+                    Next recommended speed and heading from the DRL agent.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/10">
+                    <div className="p-2 rounded-lg bg-primary/10">
+                      <Ship className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        Suggested Speed
+                      </p>
+                      <p className="text-xl font-bold">
+                        {suggestedSpeed !== null
+                          ? `${suggestedSpeed.toFixed(1)} knots`
+                          : "-- knots"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-accent/5 border border-accent/10">
+                    <div className="p-2 rounded-lg bg-accent/10">
+                      <Navigation className="h-5 w-5 text-accent" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        Suggested Heading
+                      </p>
+                      <p className="text-xl font-bold">
+                        {suggestedHeading !== null
+                          ? `${suggestedHeading.toFixed(1)}°`
+                          : "-- °"}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
               </Card>
 
               {/* Metrics & Summary - Takes 1/3 width on large screens */}
@@ -433,22 +613,22 @@ const RouteVisualization = () => {
                     </div>
 
                     <div className="flex items-center gap-3 p-3 rounded-lg bg-accent/5 border border-accent/10">
-                      <div className="p-2 rounded-lg bg-accent/10">
-                        <Clock className="h-5 w-5 text-accent" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground">
-                          Travel Time
-                        </p>
-                        <p className="text-xl font-bold">
-                          {totalTime ? `${totalTime.toFixed(1)} hrs` : "-- hrs"}
-                        </p>
-                      </div>
-                    </div>
+                      <div className="p-2 rounded-lg bg-accent/10"></div>
 
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-muted">
-                      <div className="p-2 rounded-lg bg-background">
-                        <TrendingDown className="h-5 w-5 text-primary" />
+                      <div className="flex items-center gap-3 p-3 rounded-lg bg-accent/5 border border-accent/10">
+                        <div className="p-2 rounded-lg bg-accent/10">
+                          <Clock className="h-5 w-5 text-accent" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">
+                            Travel Time
+                          </p>
+                          <p className="text-xl font-bold">
+                            {totalTime
+                              ? `${totalTime.toFixed(1)} hrs`
+                              : "-- hrs"}
+                          </p>
+                        </div>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">

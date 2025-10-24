@@ -73,6 +73,26 @@ export interface InitializeMultiLegSimulationResponse {
   image_path: string; // New field for the path to the saved visualization image
 }
 
+export interface GetNextActionRequest {
+  session_id: string;
+  current_lat: number;
+  current_lon: number;
+  current_speed: number;
+  current_heading: number;
+}
+
+export interface GetNextActionResponse {
+  new_speed: number;
+  new_heading: number;
+  current_landmark_idx: number;
+  current_leg_idx: number;
+  total_fuel_consumed: number;
+  total_emissions: number;
+  total_eta_hours: number;
+  done: boolean;
+  message: string;
+}
+
 export const suggestRouteSequence = async (
   request: SuggestRouteSequenceRequest
 ): Promise<SuggestedRouteSequenceResponse> => {
@@ -106,6 +126,25 @@ export const initializeMultiLegSimulation = async (
   if (!response.ok) {
     const errorData = await response.json();
     throw new Error(errorData.detail || "Failed to initialize multi-leg simulation");
+  }
+
+  return response.json();
+};
+
+export const getNextAction = async (
+  request: GetNextActionRequest
+): Promise<GetNextActionResponse> => {
+  const response = await fetch(`${API_BASE_URL}/get_next_action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to get next action");
   }
 
   return response.json();

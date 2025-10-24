@@ -98,6 +98,8 @@ class GetNextActionRequest(BaseModel):
     current_heading: float
 
 class GetNextActionResponse(BaseModel):
+    new_lat: float
+    new_lon: float
     new_speed: float
     new_heading: float
     current_landmark_idx: int
@@ -482,43 +484,25 @@ async def get_next_action(request: GetNextActionRequest):
         next_state, reward, done, info = marine_env.step(action, obstacle_present=False, episode=0)
 
         # Extract new speed and heading from the environment's vessel state
+        new_lat, new_lon = marine_env.current_position_latlon
         new_speed = marine_env.current_speed_knots
         new_heading = marine_env.current_heading_deg
 
         # Update session's current landmark and leg index
         session_data["current_landmark_idx"] = marine_env.current_landmark_idx
-        # The MarineEnv itself manages current_landmark_idx.
-        # For multi-leg, we need to determine current_leg_idx based on landmarks.
-        # This logic might need to be more sophisticated if landmarks are not strictly sequential per leg.
-        # For now, we'll assume current_leg_idx advances when the last landmark of a leg is reached.
         
-        # Simple logic for current_leg_idx (can be refined based on how landmarks are structured per leg)
-        # Assuming landmarks are sequential across all legs
         total_landmarks = len(marine_env.landmark_points)
         current_landmark_idx = marine_env.current_landmark_idx
         
-        # If all landmarks are reached, the simulation is done
         if current_landmark_idx >= total_landmarks:
             current_leg_idx = len(session_data["sequenced_destinations"]) - 1 # Last leg
             done = True
         else:
-            # Determine which leg the current landmark belongs to
-            # This requires knowing which landmarks correspond to which leg.
-            # For simplicity, let's assume each leg has roughly equal number of landmarks,
-            # or we need to store leg-specific landmark ranges in session_data.
-            # For now, we'll just use the overall landmark index.
             current_leg_idx = 0 # Placeholder, needs more robust logic if actual leg tracking is required
-            # A more robust approach would involve storing the landmark ranges for each leg
-            # e.g., session_data["leg_landmark_ranges"] = [(0, 5), (5, 12), ...]
-            # Then:
-            # for i, (start_lm, end_lm) in enumerate(session_data["leg_landmark_ranges"]):
-            #     if start_lm <= current_landmark_idx < end_lm:
-            #         current_leg_idx = i
-            #         break
-            # if current_landmark_idx >= session_data["leg_landmark_ranges"][-1][1]:
-            #     current_leg_idx = len(session_data["leg_landmark_ranges"]) - 1
 
         return GetNextActionResponse(
+            new_lat=float(new_lat),
+            new_lon=float(new_lon),
             new_speed=float(new_speed),
             new_heading=float(new_heading),
             current_landmark_idx=int(current_landmark_idx),
