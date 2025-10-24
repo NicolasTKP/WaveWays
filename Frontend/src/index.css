@@ -1,0 +1,162 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Ocean-inspired color system */
+    --background: 210 20% 98%;
+    --foreground: 215 25% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 15%;
+
+    /* Deep ocean blue primary */
+    --primary: 210 85% 35%;
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 210 85% 55%;
+
+    /* Teal accent for highlights */
+    --secondary: 190 65% 88%;
+    --secondary-foreground: 190 85% 25%;
+
+    --muted: 210 20% 95%;
+    --muted-foreground: 215 15% 45%;
+
+    /* Teal/cyan accent */
+    --accent: 180 75% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 25% 88%;
+    --input: 214 25% 90%;
+    --ring: 210 85% 35%;
+
+    --radius: 0.75rem;
+    
+    /* Custom maritime tokens */
+    --ocean-deep: 210 90% 25%;
+    --ocean-surface: 195 80% 65%;
+    --wave-light: 190 70% 85%;
+    
+    /* Gradients */
+    --gradient-ocean: linear-gradient(135deg, hsl(210, 85%, 35%) 0%, hsl(195, 80%, 45%) 100%);
+    --gradient-wave: linear-gradient(180deg, hsl(190, 70%, 85%) 0%, hsl(210, 20%, 98%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(210, 90%, 25%) 0%, hsl(210, 85%, 35%) 50%, hsl(195, 80%, 45%) 100%);
+    
+    /* Shadows with ocean glow */
+    --shadow-elegant: 0 10px 40px -10px hsl(210 85% 35% / 0.25);
+    --shadow-glow: 0 0 60px hsl(180 75% 45% / 0.15);
+    
+    /* Transitions */
+    --transition-smooth: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 215 30% 8%;
+    --foreground: 210 20% 95%;
+
+    --card: 215 28% 12%;
+    --card-foreground: 210 20% 95%;
+
+    --popover: 215 28% 12%;
+    --popover-foreground: 210 20% 95%;
+
+    --primary: 195 80% 55%;
+    --primary-foreground: 215 30% 8%;
+    --primary-glow: 195 80% 65%;
+
+    --secondary: 215 25% 18%;
+    --secondary-foreground: 210 20% 95%;
+
+    --muted: 215 25% 18%;
+    --muted-foreground: 215 15% 60%;
+
+    --accent: 180 75% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 215 25% 20%;
+    --input: 215 25% 20%;
+    --ring: 195 80% 55%;
+    
+    --ocean-deep: 210 90% 15%;
+    --ocean-surface: 195 80% 45%;
+    --wave-light: 190 40% 25%;
+    
+    --gradient-ocean: linear-gradient(135deg, hsl(215, 30%, 8%) 0%, hsl(210, 50%, 15%) 100%);
+    --gradient-wave: linear-gradient(180deg, hsl(215, 25%, 18%) 0%, hsl(215, 30%, 8%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(210, 50%, 10%) 0%, hsl(210, 60%, 20%) 50%, hsl(195, 70%, 25%) 100%);
+    
+    --shadow-elegant: 0 10px 40px -10px hsl(0 0% 0% / 0.5);
+    --shadow-glow: 0 0 60px hsl(180 75% 50% / 0.2);
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom utility classes */
+@layer utilities {
+  .gradient-ocean {
+    background: var(--gradient-ocean);
+  }
+  
+  .gradient-hero {
+    background: var(--gradient-hero);
+  }
+  
+  .shadow-elegant {
+    box-shadow: var(--shadow-elegant);
+  }
+  
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+}
