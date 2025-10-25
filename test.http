@@ -1,0 +1,13 @@
+curl -X POST "http://localhost:8000/api/d_star_lite_route" \
+-H "Content-Type: application/json" \
+-d '{
+  "session_id": "11f8cd6a-c6f5-435a-b4f0-a5b93930f5be",
+  "obstacle_polygon": {
+    "points": [
+      {"lat": 1.5, "lon": 103.5},
+      {"lat": 1.6, "lon": 103.5},
+      {"lat": 1.6, "lon": 103.6},
+      {"lat": 1.5, "lon": 103.6}
+    ]
+  }
+}'

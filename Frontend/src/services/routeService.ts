@@ -1,0 +1,221 @@
+import { Port } from "@/types/route";
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+
+export interface VesselConfig {
+  speed_knots: number;
+  fuel_consumption_t_per_day: number;
+  fuel_tank_capacity_t: number;
+  safety_fuel_margin_t: number;
+  length: number;
+  width: number;
+  height: number;
+  underwater_percent: number;
+}
+
+export interface PointModel {
+  lat: number;
+  lon: number;
+  name: string; // Add the name property
+}
+
+export interface UnreachableDestination {
+  lat: number;
+  lon: number;
+  reason: string;
+}
+
+export interface SuggestRouteSequenceRequest {
+  start_point: PointModel;
+  destinations: PointModel[];
+  is_cycle_route: boolean;
+  vessel_config: VesselConfig; // Use the full VesselConfig interface
+}
+
+export interface SuggestedRouteSequenceResponse {
+  session_id: string;
+  suggested_sequence: PointModel[];
+  unreachable_destinations: UnreachableDestination[];
+}
+
+export interface InitializeMultiLegSimulationRequest {
+  session_id: string;
+  start_point: PointModel;
+  sequenced_destinations: PointModel[];
+  initial_speed: number;
+  initial_heading: number;
+  vessel_config: VesselConfig; // Use the full VesselConfig interface
+}
+
+export interface InitializeMultiLegSimulationResponse {
+  session_id: string;
+  message: string;
+  initial_vessel_state: {
+    lat: number;
+    lon: number;
+    speed: number;
+    heading: number;
+  };
+  full_astar_path: [number, number][];
+  landmark_points: [number, number][];
+  unreachable_destinations: { lat: number; lon: number; reason: string }[];
+  warnings: string[];
+  image_path: string; // New field for the path to the saved visualization image
+}
+
+export interface GetNextActionRequest {
+  session_id: string;
+  current_lat: number;
+  current_lon: number;
+  current_speed: number;
+  current_heading: number;
+}
+
+export interface GetNextActionResponse {
+  new_lat: number; // Added
+  new_lon: number; // Added
+  new_speed: number;
+  new_heading: number;
+  current_landmark_idx: number;
+  current_leg_idx: number;
+  total_fuel_consumed: number;
+  total_emissions: number;
+  total_eta_hours: number;
+  done: boolean;
+  message: string;
+}
+
+export const suggestRouteSequence = async (
+  request: SuggestRouteSequenceRequest
+): Promise<SuggestedRouteSequenceResponse> => {
+  const response = await fetch(`${API_BASE_URL}/suggest_route_sequence`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to suggest route sequence");
+  }
+
+  return response.json();
+};
+
+export interface RecentPoint {
+  MMSI: number;
+  BaseDateTime: string;
+  LAT: number;
+  LON: number;
+  SOG: number;
+  COG: number;
+  Heading: number;
+  VesselType: number;
+  Length: number;
+  Width: number;
+  Draft: number;
+}
+
+export interface ETAPredictionRequest {
+  recent_points: RecentPoint[];
+  destination_lat: number;
+  destination_lon: number;
+}
+
+export interface ETAPredictionResponse {
+  predicted_arrival_time_utc: string;
+  eta: string; // Added ETA string
+}
+
+export const predictETA = async (
+  request: ETAPredictionRequest
+): Promise<ETAPredictionResponse> => {
+  const response = await fetch(`${API_BASE_URL}/predict_eta`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to predict ETA");
+  }
+
+  return response.json();
+};
+
+export interface ObstaclePolygonModel {
+  points: PointModel[];
+}
+
+export interface DStarLiteRouteRequest {
+  session_id: string;
+  obstacle_polygon: ObstaclePolygonModel;
+}
+
+export interface DStarLiteRouteResponse {
+  session_id: string;
+  d_star_lite_path: PointModel[];
+  message: string;
+}
+
+export const getDStarLiteRoute = async (
+  request: DStarLiteRouteRequest
+): Promise<DStarLiteRouteResponse> => {
+  const response = await fetch(`${API_BASE_URL}/d_star_lite_route`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to get D* Lite route");
+  }
+
+  return response.json();
+};
+
+export const initializeMultiLegSimulation = async (
+  request: InitializeMultiLegSimulationRequest
+): Promise<InitializeMultiLegSimulationResponse> => {
+  const response = await fetch(`${API_BASE_URL}/initialize_multi_leg_simulation`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to initialize multi-leg simulation");
+  }
+
+  return response.json();
+};
+
+export const getNextAction = async (
+  request: GetNextActionRequest
+): Promise<GetNextActionResponse> => {
+  const response = await fetch(`${API_BASE_URL}/get_next_action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to get next action");
+  }
+
+  return response.json();
+};
