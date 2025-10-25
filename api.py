@@ -36,7 +36,7 @@ async def load_eta_models():
     global eta_models
     print("Loading ETA prediction models at startup...")
     try:
-        eta_models = load_ensemble(model_dir='models') # Assuming models are in 'models/'
+        eta_models = load_ensemble()
         print("ETA prediction models loaded successfully.")
     except Exception as e:
         print(f"ERROR: Failed to load ETA prediction models: {e}")
@@ -76,6 +76,10 @@ class VesselConfig(BaseModel):
     fuel_consumption_t_per_day: float = vessel["fuel_consumption_t_per_day"]
     fuel_tank_capacity_t: float = vessel["fuel_tank_capacity_t"]
     safety_fuel_margin_t: float = vessel["safety_fuel_margin_t"]
+    length: float = vessel["size"][0] # Assuming vessel["size"] is [length, width, height]
+    width: float = vessel["size"][1]
+    height: float = vessel["size"][2]
+    underwater_percent: float = vessel["percent_of_height_underwater"]
 
 class SuggestRouteSequenceRequest(BaseModel):
     start_point: PointModel # This PointModel should now include the name
@@ -761,7 +765,10 @@ async def predict_eta_api(request: ETAPredictionRequest):
         # Format it as "YYYY-MM-DD HH:MM:SS UTC"
         formatted_arrival_time = prediction_result['predicted_arrival_utc'].strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        return ETAPredictionResponse(predicted_arrival_time_utc=formatted_arrival_time)
+        return ETAPredictionResponse(
+            predicted_arrival_time_utc=formatted_arrival_time,
+            eta=formatted_arrival_time # Return ETA as the formatted arrival time
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred during ETA prediction: {str(e)}")

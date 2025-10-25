@@ -29,12 +29,7 @@ export interface SuggestRouteSequenceRequest {
   start_point: PointModel;
   destinations: PointModel[];
   is_cycle_route: boolean;
-  vessel_config: {
-    speed_knots: number;
-    fuel_consumption_t_per_day: number;
-    fuel_tank_capacity_t: number;
-    safety_fuel_margin_t: number;
-  };
+  vessel_config: VesselConfig; // Use the full VesselConfig interface
 }
 
 export interface SuggestedRouteSequenceResponse {
@@ -49,12 +44,7 @@ export interface InitializeMultiLegSimulationRequest {
   sequenced_destinations: PointModel[];
   initial_speed: number;
   initial_heading: number;
-  vessel_config: {
-    speed_knots: number;
-    fuel_consumption_t_per_day: number;
-    fuel_tank_capacity_t: number;
-    safety_fuel_margin_t: number;
-  };
+  vessel_config: VesselConfig; // Use the full VesselConfig interface
 }
 
 export interface InitializeMultiLegSimulationResponse {
@@ -109,6 +99,50 @@ export const suggestRouteSequence = async (
   if (!response.ok) {
     const errorData = await response.json();
     throw new Error(errorData.detail || "Failed to suggest route sequence");
+  }
+
+  return response.json();
+};
+
+export interface RecentPoint {
+  MMSI: number;
+  BaseDateTime: string;
+  LAT: number;
+  LON: number;
+  SOG: number;
+  COG: number;
+  Heading: number;
+  VesselType: number;
+  Length: number;
+  Width: number;
+  Draft: number;
+}
+
+export interface ETAPredictionRequest {
+  recent_points: RecentPoint[];
+  destination_lat: number;
+  destination_lon: number;
+}
+
+export interface ETAPredictionResponse {
+  predicted_arrival_time_utc: string;
+  eta: string; // Added ETA string
+}
+
+export const predictETA = async (
+  request: ETAPredictionRequest
+): Promise<ETAPredictionResponse> => {
+  const response = await fetch(`${API_BASE_URL}/predict_eta`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || "Failed to predict ETA");
   }
 
   return response.json();

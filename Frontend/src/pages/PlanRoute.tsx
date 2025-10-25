@@ -113,6 +113,10 @@ const PlanRoute = () => {
           fuel_consumption_t_per_day: vesselConfig.fuelConsumption,
           fuel_tank_capacity_t: vesselConfig.tankCapacity,
           safety_fuel_margin_t: vesselConfig.safetyMargin,
+          length: vesselConfig.length,
+          width: vesselConfig.width,
+          height: vesselConfig.height,
+          underwater_percent: vesselConfig.underwaterPercent,
         },
       };
 

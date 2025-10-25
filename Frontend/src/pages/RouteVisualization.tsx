@@ -33,6 +33,7 @@ import {
   GetNextActionResponse, // Import GetNextActionResponse
   getDStarLiteRoute, // Import getDStarLiteRoute
   ObstaclePolygonModel, // Import ObstaclePolygonModel
+  predictETA, // Import predictETA
 } from "@/services/routeService";
 
 interface RouteVisualizationState {
@@ -79,6 +80,7 @@ const RouteVisualization = () => {
   const [totalFuel, setTotalFuel] = useState<number>(0);
   const [totalTime, setTotalTime] = useState<number>(0);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [eta, setEta] = useState<string | null>(null); // New state for ETA
 
   // New states for DRL simulation
   const [suggestedSpeed, setSuggestedSpeed] = useState<number | null>(null);
@@ -388,6 +390,61 @@ const RouteVisualization = () => {
     }
   }, [optimizedRouteData, vesselConfig]);
 
+  // Effect to call predictETA when optimizedRouteData and vesselConfig are available
+  useEffect(() => {
+    const fetchETA = async () => {
+      if (optimizedRouteData?.fullAstarPath.length && vesselConfig) {
+        const firstPoint = optimizedRouteData.fullAstarPath[0];
+        const lastPoint =
+          optimizedRouteData.fullAstarPath[
+            optimizedRouteData.fullAstarPath.length - 1
+          ];
+
+        const recentPoints = [
+          {
+            MMSI: Math.floor(Math.random() * 1000000000), // Random MMSI
+            BaseDateTime: new Date().toISOString(), // Current date time
+            LAT: firstPoint[0],
+            LON: firstPoint[1],
+            SOG: parseFloat((Math.random() * 20).toFixed(2)), // Random Speed Over Ground (0-20 knots)
+            COG: parseFloat((Math.random() * 360).toFixed(2)), // Random Course Over Ground (0-360 degrees)
+            Heading: parseFloat((Math.random() * 360).toFixed(2)), // Random Heading (0-360 degrees)
+            VesselType: 70, // Random Vessel Type (e.g., 70 for Cargo)
+            Length: vesselConfig.length,
+            Width: vesselConfig.width,
+            Draft: parseFloat((Math.random() * 15).toFixed(2)), // Random Draft (0-15 meters)
+          },
+        ];
+
+        const requestBody = {
+          recent_points: recentPoints,
+          destination_lat: lastPoint[0],
+          destination_lon: lastPoint[1],
+        };
+        console.log("Request Body for predictETA:", requestBody); // Log request body
+
+        try {
+          const response = await predictETA(requestBody);
+          console.log("Full API Response for predictETA:", response); // Log entire response
+          setEta(response.predicted_arrival_time_utc);
+          console.log("Predicted ETA (from response.eta):", response.predicted_arrival_time_utc);
+          toast({
+            title: "ETA Predicted",
+            description: `Estimated Time of Arrival: ${response.predicted_arrival_time_utc}`,
+          });
+        } catch (error: any) {
+          toast({
+            title: "Error Predicting ETA",
+            description: error.message || "Failed to predict ETA.",
+            variant: "destructive",
+          });
+        }
+      }
+    };
+
+    fetchETA();
+  }, [optimizedRouteData, vesselConfig, toast]);
+
   const handleMapClick = (lat: number, lng: number) => {
     // Log or show a toast with clicked coordinates
     toast({
@@ -668,6 +725,18 @@ const RouteVisualization = () => {
                         </p>
                       </div>
                     </div>
+
+                    {eta && (
+                      <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/10">
+                        <div className="p-2 rounded-lg bg-primary/10">
+                          <Clock className="h-5 w-5 text-primary" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">ETA</p>
+                          <p className="text-xl font-bold">{eta}</p>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
