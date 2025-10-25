@@ -49,9 +49,13 @@
 
 **Dynamic Rerouting** – Continuously monitors weather, sea conditions, and traffic to provide intelligent rerouting suggestions during a voyage.
 
+**Travel Sequence Suggestion** - Suggest the best travel sequence based on TSP algorithm by considering travel distance, weather condition, sea currents, and fuel capacity.
+
 **ETA Calculation** – Accurately predicts the Estimated Time of Arrival using advanced algorithms for improved scheduling and coordination.
 
 **Fuel and Carbon Emission Analysis** – Estimates fuel consumption and carbon output to help operators minimize environmental impact and improve sustainability.
+
+**Vessel Shifting Suggestion** – Utilizes DRL agent to suggest the best vessel heading direction and speed according to the weather and sea currects, act as a guidance in sea, helps to minimizes fuel consumption and carbon emissions.
 
 **Mobile Support** – Fully compatible with mobile devices, allowing users to monitor routes, receive updates, and manage operations anytime, anywhere.
 
