@@ -594,7 +594,7 @@ def generate_multi_leg_astar_path_and_landmarks(vessel_data, sequenced_destinati
                                                 min_lon_region=99, max_lon_region=215, 
                                                 min_lat_region=-5, max_lat_region=20, 
                                                 cell_size_m=10000, landmark_interval_km=100,
-                                                search_range_km=3): # Added search_range_km
+                                                search_range_km=2): # Added search_range_km
     """
     Generates a combined A* path and landmark points for a given sequence of (lat, lon) destinations.
     This function assumes the sequence is already determined (e.g., by TSP or user input).

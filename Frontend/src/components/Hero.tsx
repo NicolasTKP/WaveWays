@@ -37,7 +37,7 @@ export const Hero = () => {
           <h1 className="text-5xl md:text-7xl font-bold text-primary-foreground mb-6 animate-fade-in-up">
             Navigate Smarter with{" "}
             <span className="bg-gradient-to-r from-accent to-background bg-clip-text text-transparent">
-              WaveWays
+              WavesWays
             </span>
           </h1>
 

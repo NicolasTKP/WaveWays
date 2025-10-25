@@ -21,9 +21,9 @@ export const Navbar = () => {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-0 group">
-            <img src={logo} alt="WaveWays Logo" className="h-16 w-16 object-contain" />
+            <img src={logo} alt="WavesWays Logo" className="h-16 w-16 object-contain" />
             <span className="text-xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              WaveWays
+              WavesWays
             </span>
           </Link>
 
