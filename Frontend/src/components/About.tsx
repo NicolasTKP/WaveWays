@@ -72,36 +72,36 @@ export const About = () => {
           </div>
 
           {/* Right Column - Price List */}
-          <div className="w-full max-w-4xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden animate-fade-in">
+          <div className="w-full max-w-4xl mx-auto rounded-lg shadow-lg overflow-hidden animate-fade-in">
             <div className="grid grid-cols-3 text-center text-white font-bold text-lg">
-              <div className="p-4 bg-blue-600">Allowance Price</div>
-              <div className="p-4 bg-blue-700">Normal Price</div>
+              <div className="p-4 bg-blue-600 border-r border-blue-500">Allowance Price</div>
+              <div className="p-4 bg-blue-700 border-r border-blue-600">Normal Price</div>
               <div className="p-4 bg-blue-800">Co-Op Bundle</div>
             </div>
             {/* Rows for pricing details */}
             {/* Row 1 */}
-            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200">
-              <div className="p-4 text-blue-800">RM0.05 / minute</div>
-              <div className="p-4 text-blue-800">RM0.10 / minute</div>
-              <div className="p-4 text-blue-800">RM 27 / 5 hours (10% Discount)</div>
+            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200 bg-white">
+              <div className="p-4 text-black border-r border-gray-200">RM0.05 / minute</div>
+              <div className="p-4 text-black border-r border-gray-200">RM0.10 / minute</div>
+              <div className="p-4 text-black">RM 27 / 5 hours (10% Discount)</div>
             </div>
             {/* Row 2 */}
-            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200">
-              <div className="p-4 text-blue-800">Free RM30 Credits Upon Registration (10 hours)</div>
-              <div className="p-4 text-blue-800">Free RM60 Credits Upon Registration (10 hours)</div>
-              <div className="p-4 text-blue-800">RM51 / 10 hours (15% Discount)</div>
+            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200 bg-white">
+              <div className="p-4 text-black border-r border-gray-200">Free RM30 Credits Upon Registration (10 hours)</div>
+              <div className="p-4 text-black border-r border-gray-200">Free RM60 Credits Upon Registration (10 hours)</div>
+              <div className="p-4 text-black">RM51 / 10 hours (15% Discount)</div>
             </div>
             {/* Row 3 */}
-            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200">
-              <div className="p-4 text-blue-800">5% Off Above 80 hours per Month</div>
-              <div className="p-4 text-blue-800">5% Off Above 100 hours per Month</div>
-              <div className="p-4 text-blue-800">RM 120 / 25 hours (20% Discount)</div>
+            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200 bg-white">
+              <div className="p-4 text-black border-r border-gray-200">5% Off Above 80 hours per Month</div>
+              <div className="p-4 text-black border-r border-gray-200">5% Off Above 100 hours per Month</div>
+              <div className="p-4 text-black">RM 120 / 25 hours (20% Discount)</div>
             </div>
             {/* Row 4 */}
-            <div className="grid grid-cols-3 text-center py-4">
-              <div className="p-4 text-blue-800">Cap at RM 400 per Month</div>
-              <div className="p-4 text-blue-800"></div> {/* Empty cell for Normal Price */}
-              <div className="p-4 text-blue-800">RM 225 / 50 hours (25% Discount)</div>
+            <div className="grid grid-cols-3 text-center py-4 bg-white">
+              <div className="p-4 text-black border-r border-gray-200">Cap at RM 400 per Month</div>
+              <div className="p-4 text-black border-r border-gray-200"></div> {/* Empty cell for Normal Price */}
+              <div className="p-4 text-black">RM 225 / 50 hours (25% Discount)</div>
             </div>
           </div>
         </div>
