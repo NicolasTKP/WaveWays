@@ -3,13 +3,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import oceanPattern from "@/assets/ocean-pattern.jpg";
 
 export const About = () => {
-  const stats = [
-    { label: "Routes Optimized", value: "10K+", icon: Target },
-    { label: "Fuel Saved", value: "30%", icon: Award },
-    { label: "Happy Clients", value: "500+", icon: Users },
-    { label: "Algorithms", value: "Advanced", icon: Lightbulb },
-  ];
-
   return (
     <section id="about" className="py-24 bg-background relative overflow-hidden">
       {/* Background Pattern */}
@@ -78,27 +71,38 @@ export const About = () => {
             </div>
           </div>
 
-          {/* Right Column - Stats Grid */}
-          <div className="grid grid-cols-2 gap-6 animate-fade-in">
-            {stats.map((stat, index) => (
-              <Card
-                key={index}
-                className="group hover:shadow-xl transition-all duration-300 border-2 hover:border-accent/50 hover:scale-105"
-                style={{ animationDelay: `${index * 0.1}s` }}
-              >
-                <CardContent className="p-6 text-center">
-                  <div className="inline-flex p-4 rounded-xl bg-primary/10 text-primary group-hover:bg-accent group-hover:text-accent-foreground transition-colors mb-4">
-                    <stat.icon className="h-8 w-8" />
-                  </div>
-                  <div className="text-3xl font-bold mb-2 bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                    {stat.value}
-                  </div>
-                  <div className="text-sm text-muted-foreground font-medium">
-                    {stat.label}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+          {/* Right Column - Price List */}
+          <div className="w-full max-w-4xl mx-auto bg-white rounded-lg shadow-lg overflow-hidden animate-fade-in">
+            <div className="grid grid-cols-3 text-center text-white font-bold text-lg">
+              <div className="p-4 bg-blue-600">Allowance Price</div>
+              <div className="p-4 bg-blue-700">Normal Price</div>
+              <div className="p-4 bg-blue-800">Co-Op Bundle</div>
+            </div>
+            {/* Rows for pricing details */}
+            {/* Row 1 */}
+            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200">
+              <div className="p-4 text-blue-800">RM0.05 / minute</div>
+              <div className="p-4 text-blue-800">RM0.10 / minute</div>
+              <div className="p-4 text-blue-800">RM 27 / 5 hours (10% Discount)</div>
+            </div>
+            {/* Row 2 */}
+            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200">
+              <div className="p-4 text-blue-800">Free RM30 Credits Upon Registration (10 hours)</div>
+              <div className="p-4 text-blue-800">Free RM60 Credits Upon Registration (10 hours)</div>
+              <div className="p-4 text-blue-800">RM51 / 10 hours (15% Discount)</div>
+            </div>
+            {/* Row 3 */}
+            <div className="grid grid-cols-3 text-center py-4 border-b border-gray-200">
+              <div className="p-4 text-blue-800">5% Off Above 80 hours per Month</div>
+              <div className="p-4 text-blue-800">5% Off Above 100 hours per Month</div>
+              <div className="p-4 text-blue-800">RM 120 / 25 hours (20% Discount)</div>
+            </div>
+            {/* Row 4 */}
+            <div className="grid grid-cols-3 text-center py-4">
+              <div className="p-4 text-blue-800">Cap at RM 400 per Month</div>
+              <div className="p-4 text-blue-800"></div> {/* Empty cell for Normal Price */}
+              <div className="p-4 text-blue-800">RM 225 / 50 hours (25% Discount)</div>
+            </div>
           </div>
         </div>
 
