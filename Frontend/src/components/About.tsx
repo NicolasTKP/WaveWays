@@ -17,7 +17,7 @@ export const About = () => {
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10">
               <Users className="h-4 w-4 text-primary" />
               <span className="text-sm font-medium text-primary">
-                About WaveWays
+                About WavesWays
               </span>
             </div>
 
@@ -29,7 +29,7 @@ export const About = () => {
             </h2>
 
             <p className="text-lg text-muted-foreground leading-relaxed">
-              WaveWays is an advanced vessel route optimization system developed by InternshipSeekers for maritime route planning excellence. Our system combines cutting-edge algorithms with real-time environmental data to deliver the most efficient and cost-effective shipping routes.
+              WavesWays is an advanced vessel route optimization system developed by InternshipSeekers for maritime route planning excellence. Our system combines cutting-edge algorithms with real-time environmental data to deliver the most efficient and cost-effective shipping routes.
             </p>
 
             <div className="space-y-4">

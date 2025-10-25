@@ -11,6 +11,8 @@ import geopandas as gpd
 from shapely.geometry import Point, Polygon, LineString
 import matplotlib.pyplot as plt # Import matplotlib for plotting
 import os # Import os for path manipulation
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Import DRL components and utilities
 from training_codes.DRL_train import Actor, DDPG, MarineEnv
@@ -760,14 +762,19 @@ async def predict_eta_api(request: ETAPredictionRequest):
         # Call the predict_eta function from etaModel.py
         prediction_result = predict_eta(recent_points_dicts, destination_latlon, eta_models)
 
-        # Format the predicted arrival time
-        # The datetime object from predict_eta is UTC aware.
-        # Format it as "YYYY-MM-DD HH:MM:SS UTC"
-        formatted_arrival_time = prediction_result['predicted_arrival_utc'].strftime("%Y-%m-%d %H:%M:%S UTC")
+        arrival_utc = prediction_result['predicted_arrival_utc']
+
+        # Convert from UTC → Malaysia time (GMT+8)
+        arrival_myt = arrival_utc.astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
+
+        # Format both times for readability
+        formatted_arrival_utc = arrival_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+        formatted_arrival_myt = arrival_myt.strftime("%Y-%m-%d %H:%M:%S GMT+8")
+
 
         return ETAPredictionResponse(
-            predicted_arrival_time_utc=formatted_arrival_time,
-            eta=formatted_arrival_time # Return ETA as the formatted arrival time
+            predicted_arrival_time_utc=formatted_arrival_myt,
+            eta=formatted_arrival_utc # Return ETA as the formatted arrival time
         )
 
     except Exception as e:

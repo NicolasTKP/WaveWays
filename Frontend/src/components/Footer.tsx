@@ -14,7 +14,7 @@ export const Footer = () => {
                 <Ship className="h-5 w-5" />
               </div>
               <span className="text-xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                WaveWays
+                WavesWays
               </span>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -82,17 +82,13 @@ export const Footer = () => {
             <ul className="space-y-3">
               <li className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Github className="h-4 w-4" />
-                <a href="https://github.com/NicolasTKP/WaveWays" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
+                <a href="https://github.com/NicolasTKP/WavesWays" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">
                   GitHub Repository
                 </a>
               </li>
               <li className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Mail className="h-4 w-4" />
-                <span>support@waveways.io</span>
-              </li>
-              <li className="flex items-center gap-2 text-sm text-muted-foreground">
                 <MapPin className="h-4 w-4" />
-                <span>Maritime Innovation Hub</span>
+                <span>Asia Pacific University</span>
               </li>
             </ul>
           </div>
@@ -102,7 +98,7 @@ export const Footer = () => {
         <div className="pt-8 border-t border-border">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <p className="text-sm text-muted-foreground">
-              © {currentYear} WaveWays by InternshipSeekers. All rights reserved.
+              © {currentYear} WavesWays by InternshipSeekers. All rights reserved.
             </p>
             <div className="flex gap-6">
               <a href="#" className="text-sm text-muted-foreground hover:text-primary transition-colors">
