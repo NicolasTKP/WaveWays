@@ -57,7 +57,7 @@ export const Hero = () => {
             <Button 
               size="lg" 
               variant="outline" 
-              className="border-2 border-background text-background hover:bg-background hover:text-foreground text-lg px-8 py-6"
+              className="border-2 border-background text-background hover:scale-105 text-lg px-8 py-6 text-black transition duration-300"
               onClick={() => navigate('/plan-route')}
             >
               View Demo
