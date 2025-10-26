@@ -124,7 +124,7 @@ Install WavesWays using one of the following methods:
 **Using `npm`** &nbsp; [<img align="center" src="https://img.shields.io/badge/npm-CB3837.svg?style={badge_style}&logo=npm&logoColor=white" />](https://www.npmjs.com/)
 
 ```sh
-❯ cd Frontend && npm install
+❯ cd Frontend && npm install --legacy-peer-deps
 ```
 
 4. Configure Google Map API:
